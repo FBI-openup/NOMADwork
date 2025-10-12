@@ -19,6 +19,17 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
+Generate random instances:
+
+```
+# 5x5 grid, 20 flows, T=60, with hotspots and seed
+python -m src.generator -M 5 -N 5 -F 20 -T 60 --seed 42 \
+  --hotspots 2 --hotspot-boost 2.5 -o examples/gen1.in
+
+# Minimal: 3x3 grid, 2 flows, T=10 (close to the example)
+python -m src.generator -M 3 -N 3 -F 2 -T 10 -o examples/gen_small.in
+```
+
 Run the scheduler on the example input (file input or stdin):
 
 ```

@@ -31,6 +31,7 @@ def main() -> None:
         problem = parse_stream(sys.stdin)
 
     if args.solver == "greedy":
+        print("Using Greedy scheduler")
         scheduler = GreedyScheduler(
             alpha=args.alpha, top_k=args.top_k, stickiness_bonus=args.stickiness, tmax_delay=args.tmax_delay
         )
