@@ -22,7 +22,7 @@ pip install -r requirements.txt
 Run the scheduler on the example input (file input or stdin):
 
 ```
-# As a module
+# Greedy (default)
 python -m src.main -i examples/example1.in -o out.txt
 
 # Or via stdin/stdout
@@ -30,6 +30,9 @@ python -m src.main < examples/example1.in > out.txt
 
 # Or run as a script directly
 python src/main.py -i examples/example1.in -o out.txt
+
+# MILP (PuLP/CBC). Requires 'pulp' installed.
+python -m src.main --solver milp -i examples/example1.in -o out_milp.txt
 ```
 
 Score the produced output:
@@ -44,7 +47,8 @@ python -m src.scorer examples/example1.in out.txt
 - `src/io.py` — Input parsing and output formatting.
 - `src/model.py` — Core dataclasses for UAVs, flows, and the problem.
 - `src/bandwidth.py` — U2GL bandwidth model with phase.
-- `src/scheduler.py` — Baseline greedy scheduler.
+- `src/scheduler.py` - Baseline greedy scheduler.
+- `src/solvers/milp_pulp.py` - MILP solver backend using PuLP (CBC).
 - `src/scorer.py` — Scoring implementation per the problem statement.
 - `examples/` — Example input and reference output.
 - `docs/brainstorm.md` — Design notes, assumptions, and improvement ideas.

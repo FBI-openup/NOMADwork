@@ -36,16 +36,16 @@ def main() -> None:
         )
         schedules = scheduler.schedule(problem)
     else:
-        # MILP solver path (stubbed): try import and run
+        # MILP solver path: try import and run
         try:
             if __package__ is None or __package__ == "":
-                from src.solvers.milp_stub import solve_milp  # type: ignore
+                from src.solvers.milp_pulp import solve_milp  # type: ignore
             else:
-                from .solvers.milp_stub import solve_milp  # type: ignore
+                from .solvers.milp_pulp import solve_milp  # type: ignore
         except Exception as e:
             print("MILP solver backend not available: ", e, file=sys.stderr)
             sys.exit(2)
-        schedules = solve_milp(problem)
+        schedules = solve_milp(problem, alpha=args.alpha, top_k=args.top_k, tmax_delay=args.tmax_delay)
     out_text = format_output(schedules)
     if args.output:
         with open(args.output, "w", encoding="utf-8") as f:
