@@ -125,10 +125,11 @@ class GreedyScheduler:
                 # Update states
                 f.remaining -= send
                 caps[best_coord] = avail - send
+                if best_coord not in f.landings_used:
+                    f.landings_used.add(best_coord)
+                    f.unique_landings = len(f.landings_used)
                 if f.last_landing != best_coord:
                     # Landing point changed
                     f.last_landing = best_coord
-                    f.unique_landings += 1
 
         return schedules
-

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Set
 
 
 Coord = Tuple[int, int]
@@ -35,6 +35,7 @@ class Flow:
     remaining: float = field(init=False)
     last_landing: Optional[Coord] = field(default=None, init=False)
     unique_landings: int = field(default=0, init=False)
+    landings_used: Set[Coord] = field(default_factory=set, init=False)
 
     def __post_init__(self) -> None:
         self.remaining = float(self.total)
@@ -63,4 +64,3 @@ class Problem:
 
 def manhattan(a: Coord, b: Coord) -> int:
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
-
