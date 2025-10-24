@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -124,3 +126,18 @@ def test_score_cli_reports_score(capsys):
     assert exit_code == 0
     captured = capsys.readouterr()
     assert "Score:" in captured.out
+
+
+def test_submission_script_runs_without_args(tmp_path):
+    input_text = EXAMPLE_PATH.read_text(encoding="utf-8")
+    completed = subprocess.run(
+        [sys.executable, "submission.py"],
+        input=input_text,
+        text=True,
+        capture_output=True,
+        check=True,
+        cwd=Path(__file__).resolve().parents[1],
+    )
+    assert completed.stderr == ""
+    output_lines = completed.stdout.strip().splitlines()
+    assert output_lines[0].startswith("1 ")
