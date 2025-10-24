@@ -1,0 +1,85 @@
+Q:
+Regarding the Data Communications problem. Do we need to output flow scheduling records only during the time slots, when a flow is in the landing area or should it be tracked from the very first time slot, when it accesses the network, containing the route over U2U to the landing are?
+
+Example: Flow #1 starts at t=1 at x=0 y=0 and must land in the area 1 <= x <= 2, 0 <= y <= 1. Hence the flow should travel 1 U2U link to the right.
+
+Should it be on the output like this:
+
+1 N
+1 1 0 0 0 <- No offload during U2U hops
+1 2 1 0 z1 <- Start offloading in the landing are
+1 3 1 0 z2
+etc
+
+Or like this, omitting non U2GL records
+
+1 N
+1 2 1 0 z1 <- Start offloading in the landing are
+1 3 1 0 z2
+etc
+
+And what about the cases when a flow may leave the landing area over the scheduling period?
+
+A:
+The correct output should contain only four numbers per line; in your example, the output has five numbers. If a flow starts at t=1, then the output should begin at t=1 and continue until the flow is fully transmitted or the simulation time ends. And a flow leave the landing area is illegal.
+
+Q:
+I have a few question about the scoring function:
+
+1. Is Q_total the total traffic volume of one flow or all flows together?
+
+2. Is t_i global time? Meaning, if flow 1 starts at time 10 and delivers everything at time 15, is t_i = 5 or t_i = 15
+
+3. the Q_total,j in the total score, is it the total delivered traffic volume of flow j?
+
+A:
+Hello Eric, please find the answer from our technical team
+1.total volume of one flow
+2.global time
+3.total volume of flow j 
+
+Q:
+Regarding the Data Communications problem, a single U2GL can have several flows going through it during the same time slot right? given that the sum of all the data being transmitted is less than or equal to b(φ + t)
+
+A:
+Yes, a single U2GL can have several flows going through it during the same time slot
+
+Q:
+The data flow destination region is [m1, n1], [m2, n2]. How does this region depend on the max number of uav? Should the relation be destRegion/amountOfUav = 1/4 or the region value is always fixed(4 uav only)?
+
+A:
+The data flow destination region is the UAV nodes within the range m1 <= m <= m2 and n1 <= n <= n2. The size of the region may be any size not exceeding the max number of UAV.
+
+Q:
+1. How is data transmission carried out between UAVs?
+2. Can a UAV only transmit data to its directly adjacent UAVs (up, down, left, and right)?
+3. If not, how is long-distance transmission achieved among UAVs?
+4. Are the upload and download bandwidths of a UAV independent or shared?
+5. When a flow is generated, does the source UAV need to first receive a signal before transmitting it further?
+6. Or does the UAV directly generate and transmit the flow (without using download bandwidth)?
+7. For each transmission, is data sent directly from the source UAV to the target region without intermediate relays?
+8. Does the sentence “Specifically, each data flow needs to be distributed to one U2GL at each time slot.” mean that once a flow starts transmission, it must continue transmitting continuously?
+9. Or can a flow transmit part of its data, pause for a while, and then continue later?
+10. Can the same flow exist simultaneously on two different UAVs within the target region at the same time slot?
+11. What does “di” “hops” mean in the evaluation criteria?
+12. In the standard output, is it valid to change the last line from `3 0 2 10` to `3 0 1 10`? 
+
+A:
+1-3: UAVs transmit data through four adjacent neighbors (up, down, left, and right). Long distance transmission is achieved by multiple transmissions between neighbor UAVs;
+
+4: The problem only involves upload traffic; download traffic does not need to be considered.
+
+5-6: You don't have to consider download traffic. the UAV directly generate and transmit the flow.
+
+7. Transmission needs to be done through adjacent UAVs, but the links between UAVs are not the bottleneck in this problem.
+
+8. No, you can transmit a flow in the 1st second and not in the 2nd.
+
+9. Yes, that's allowed
+
+10. No
+
+11. "di" is the Manhattan Distance between the access point and the landing point.
+
+12. This output is legal.
+
