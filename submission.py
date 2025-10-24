@@ -192,6 +192,14 @@ def parse_problem(raw_text: str) -> Problem:
 CAPACITY_PATTERN = (0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0, 0.5, 0.0, 0.0)
 EPSILON = 1e-6
 
+# Candidate pruning controls
+BASE_WINDOW = 30
+EXPAND_STEP = 10
+MAX_WINDOW = 80
+CAPACITY_BUFFER = 1.05
+MAX_SLOTS_PER_CELL = 40
+MAX_CELLS_PER_FLOW = 12
+
 
 def capacity_at(uav: UAV, time_slot: int) -> float:
     index = (uav.phase + time_slot) % len(CAPACITY_PATTERN)
@@ -236,7 +244,7 @@ def _collect_time_slots(
     if earliest >= horizon:
         return []
 
-    window = 20
+    window = BASE_WINDOW
     total_capacity = 0.0
     selected: List[int] = []
     seen = set()
@@ -255,14 +263,16 @@ def _collect_time_slots(
 
     consider(earliest + window)
     while (
-        total_capacity + 1e-6 < flow.volume
-        and window < 200
+        total_capacity + 1e-6 < flow.volume * CAPACITY_BUFFER
+        and window < MAX_WINDOW
         and earliest + window < horizon
     ):
-        window = min(200, window + 10)
+        window = min(MAX_WINDOW, window + EXPAND_STEP)
         consider(earliest + window)
 
     selected.sort()
+    if len(selected) > MAX_SLOTS_PER_CELL:
+        selected = selected[:MAX_SLOTS_PER_CELL]
     return selected
 
 
@@ -277,6 +287,13 @@ def build_candidate_index(problem: Problem, table: Dict[Tuple[int, int], List[fl
             slots = _collect_time_slots(flow, cell, horizon, table)
             if slots:
                 slot_map[cell] = slots
+        if len(slot_map) > MAX_CELLS_PER_FLOW:
+            ranked = sorted(
+                slot_map.items(),
+                key=lambda item: _score_cell(flow, item[1], item[0], table),
+                reverse=True,
+            )
+            slot_map = dict(ranked[:MAX_CELLS_PER_FLOW])
         flow_map[flow.flow_id] = FlowCandidate(flow=flow, time_slots=slot_map)
     return CandidateIndex(flows=flow_map)
 
@@ -497,7 +514,7 @@ def solve_cluster(
 
     model += pulp.lpSum(objective_terms) - pulp.lpSum(landing_penalties) - pulp.lpSum(slack_penalties)
 
-    solver = pulp.PULP_CBC_CMD(msg=False, timeLimit=5, gapRel=0.01)
+    solver = pulp.PULP_CBC_CMD(msg=False, timeLimit=2, gapRel=0.05)
     status = model.solve(solver)
     if pulp.LpStatus[status] not in {"Optimal", "Feasible"}:
         return _fallback(cluster, warm_start)
