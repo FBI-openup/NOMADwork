@@ -514,7 +514,10 @@ def solve_cluster(
 
     model += pulp.lpSum(objective_terms) - pulp.lpSum(landing_penalties) - pulp.lpSum(slack_penalties)
 
-    solver = pulp.PULP_CBC_CMD(msg=False, timeLimit=2, gapRel=0.05)
+    if hasattr(pulp, "HiGHS_CMD"):
+        solver = pulp.HiGHS_CMD(msg=False, timeLimit=2)
+    else:
+        solver = pulp.PULP_CBC_CMD(msg=False, timeLimit=2, gapRel=0.05)
     status = model.solve(solver)
     if pulp.LpStatus[status] not in {"Optimal", "Feasible"}:
         return _fallback(cluster, warm_start)
