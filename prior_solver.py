@@ -48,7 +48,6 @@ Author: Solver
 """
 
 import sys
-from collections import defaultdict
 
 # ==========================
 # Data structures
@@ -115,6 +114,7 @@ W_LAND    = 10.0             # 稳定性权重
 INERTIA_BONUS = 1.2          # 上秒在同一落地 - REDUCED from 2.0 to allow more switching
 ETA_BONUS_B   = 2.2          # 下一秒 B 窗口 - TUNED
 ETA_BONUS_HB  = 1.1          # 下一秒 B/2 窗口 - TUNED
+ETA_PENALTY_ZERO = -2.5    # 下一秒为 0 的惩罚（可调，建议与 ETA_BONUS_B 同量级）
 COMPLETE_BONUS_ALPHA = 0.12  # 完成度奖励系数 - INCREASED from 0.05
 
 # 【已禁用】饥饿保护 | 【DISABLED】Starvation Protection
@@ -283,6 +283,7 @@ def run_scheduler(M,N,FN,T,uavs,coord2idx,flows):
         flag = cap_flag_next.get(ell_idx, 0)
         if flag == 2:   bonus += ETA_BONUS_B     # 下秒有满容量 | Full capacity next second
         elif flag == 1: bonus += ETA_BONUS_HB    # 下秒有半容量 | Half capacity next second
+        elif flag == 0: bonus += ETA_PENALTY_ZERO  # 下秒为 0 → 施加惩罚，避免选中
         # 3) 完成度奖励：快要完成的流优先级提高（帮助收尾）
         # Completion bonus: nearly-completed flows get slight boost (helps wrap up)
         remain_ratio = flow.remain / max(flow.Q_total, 1e-9)

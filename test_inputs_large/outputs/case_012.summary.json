@@ -1,0 +1,153 @@
+{
+  "input": "c:\\Users\\zhang\\PycharmProjects\\PythonProject\\NOMADwork\\test_inputs_large\\case_012.txt",
+  "output": "c:\\Users\\zhang\\PycharmProjects\\PythonProject\\NOMADwork\\test_inputs_large\\outputs\\case_012.out",
+  "ok": true,
+  "S_total": 90.7550334418327,
+  "per_flow": [
+    {
+      "f": 0,
+      "Q_total": 1339.0,
+      "transferred": 1339.0,
+      "T_u2g": 1.0,
+      "t_delay": 3,
+      "T_delay": 0.7692307692307693,
+      "T_dist": 0.8310392963073646,
+      "k": 2,
+      "T_land": 0.5,
+      "S_f": 85.31579427383633
+    },
+    {
+      "f": 1,
+      "Q_total": 1375.0,
+      "transferred": 1375.0,
+      "T_u2g": 1.0,
+      "t_delay": 2,
+      "T_delay": 0.8333333333333334,
+      "T_dist": 0.870550563296124,
+      "k": 1,
+      "T_land": 1.0,
+      "S_f": 92.78318356555039
+    },
+    {
+      "f": 2,
+      "Q_total": 1633.0,
+      "transferred": 1633.0,
+      "T_u2g": 1.0,
+      "t_delay": 1,
+      "T_delay": 0.9090909090909091,
+      "T_dist": 0.8681344280763281,
+      "k": 4,
+      "T_land": 0.25,
+      "S_f": 86.72585102410802
+    },
+    {
+      "f": 3,
+      "Q_total": 988.0,
+      "transferred": 988.0,
+      "T_u2g": 1.0,
+      "t_delay": 1,
+      "T_delay": 0.9090909090909091,
+      "T_dist": 0.9196890721453255,
+      "k": 2,
+      "T_land": 0.5,
+      "S_f": 90.77249034617795
+    },
+    {
+      "f": 4,
+      "Q_total": 962.0,
+      "transferred": 962.0,
+      "T_u2g": 1.0,
+      "t_delay": 2,
+      "T_delay": 0.8333333333333334,
+      "T_dist": 0.8676114145470756,
+      "k": 2,
+      "T_land": 0.5,
+      "S_f": 87.69500910307893
+    },
+    {
+      "f": 5,
+      "Q_total": 1829.0,
+      "transferred": 1829.0,
+      "T_u2g": 1.0,
+      "t_delay": 3,
+      "T_delay": 0.7692307692307693,
+      "T_dist": 0.8705505632961242,
+      "k": 1,
+      "T_land": 1.0,
+      "S_f": 91.5011322834991
+    },
+    {
+      "f": 6,
+      "Q_total": 964.0,
+      "transferred": 964.0,
+      "T_u2g": 1.0,
+      "t_delay": 0,
+      "T_delay": 1.0,
+      "T_dist": 1.0,
+      "k": 1,
+      "T_land": 1.0,
+      "S_f": 100.00000000000003
+    },
+    {
+      "f": 7,
+      "Q_total": 1768.0,
+      "transferred": 1768.0,
+      "T_u2g": 1.0,
+      "t_delay": 1,
+      "T_delay": 0.9090909090909091,
+      "T_dist": 0.9330329915368076,
+      "k": 1,
+      "T_land": 1.0,
+      "S_f": 96.1728079279224
+    },
+    {
+      "f": 8,
+      "Q_total": 1119.0,
+      "transferred": 1119.0,
+      "T_u2g": 1.0,
+      "t_delay": 1,
+      "T_delay": 0.9090909090909091,
+      "T_dist": 0.9169517231424226,
+      "k": 2,
+      "T_land": 0.5,
+      "S_f": 90.69036987609086
+    },
+    {
+      "f": 9,
+      "Q_total": 629.0,
+      "transferred": 629.0,
+      "T_u2g": 1.0,
+      "t_delay": 1,
+      "T_delay": 0.9090909090909091,
+      "T_dist": 0.9330329915368073,
+      "k": 1,
+      "T_land": 1.0,
+      "S_f": 96.17280792792239
+    },
+    {
+      "f": 10,
+      "Q_total": 1920.0,
+      "transferred": 1920.0,
+      "T_u2g": 1.0,
+      "t_delay": 1,
+      "T_delay": 0.9090909090909091,
+      "T_dist": 0.8940628312148188,
+      "k": 2,
+      "T_land": 0.5,
+      "S_f": 90.00370311826275
+    },
+    {
+      "f": 11,
+      "Q_total": 1522.0,
+      "transferred": 1522.0,
+      "T_u2g": 1.0,
+      "t_delay": 3,
+      "T_delay": 0.7692307692307693,
+      "T_dist": 0.8426655005285556,
+      "k": 2,
+      "T_land": 0.5,
+      "S_f": 85.66458040047206
+    }
+  ],
+  "capacity_violations": []
+}
