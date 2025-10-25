@@ -1,0 +1,16 @@
+Generated problem instances and scores
+
+hotspot1.in
+- Params: M=20, N=20, F=300, T=180, seed=42
+- B in [50,200], size in [30,300], start in [0,140]
+- Rect w/h in [3,10], hotspots=3, hotspot_boost=3.0
+- Bias: bias_rect_p=0.7, bias_access_p=0.7, access_radius=4
+- Score (submission.py): 74.253
+
+hotspot_small.in
+- Params: M=12, N=12, F=80, T=120, seed=7
+- B in [30,120], size in [20,150], start in [0,90]
+- Rect w/h in [3,8], hotspots=2, hotspot_boost=2.5
+- Bias: bias_rect_p=0.7, bias_access_p=0.7, access_radius=3
+- Score (submission.py): 78.067
+

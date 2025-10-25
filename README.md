@@ -45,7 +45,13 @@ Use `python -m src.score_cli` to evaluate previously generated `.out` files:
 ```bash
 python -m src.score_cli --input examples/example1.in --schedule examples/example1.out --validate
 
-python -m src.score_cli --input examples/gen.in --schedule examples/julia_gen1.out --validate
+python -m src.score_cli --input examples/gen1.in --schedule examples/julia_gen1.out --validate
+
+python -m src.score_cli --input examples/gen1.in --schedule examples/gen1V3.out --validate
+
+python -m src.score_cli --input examples/gen1.in --schedule examples/gen1p.out --validate
+
+
 ```
 The command prints the total score to stdout and, with `--output-json`, produces a JSON summary (assignments + per-flow metrics). Programmatic access is available through `src.scorer.score_from_files`.
 

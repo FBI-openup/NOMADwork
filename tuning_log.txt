@@ -1,0 +1,97 @@
+Run log for beta.in scoring
+
+V5 (42.685)
+- Baseline with MILP + greedy warm start + piecewise 1/k, flow-weighted objective.
+
+V6 (42.685)
+- Greedy tuning: INERTIA_BONUS 2.0 -> 4.0, ETA_BONUS_HB 1.5 -> 1.0.
+- No score change.
+
+V7 (42.685)
+- Greedy tuning: add short-horizon capacity lookahead bonus (window=3, scale=0.5).
+- No score change.
+
+V8 (42.685)
+- Postprocess: consolidate to dominant landing cell within capacity.
+- No score change.
+
+V9 (42.685)
+- Postprocess: left-shift segments earlier within capacity to improve delay.
+- No score change.
+
+V10 (42.685)
+- Candidate generation: CAPACITY_BUFFER 1.5 -> 1.05, MAX_SLOTS_PER_CELL 150 -> 80.
+- No score change.
+
+V11 (40.037)
+- Greedy candidate cap reduced: GREEDY_TOP_K 99 -> 20.
+- Fixed postprocess to respect earliest arrival at anchor. Score dropped; reverted later.
+
+V12 (42.685)
+- Reverted GREEDY_TOP_K to 99. Score returned to baseline.
+
+V13 (42.685)
+- Increased MILP timeLimit to 20s, tightened gap to 0.0.
+- No score change vs baseline.
+
+V14 (42.685)
+- Candidate cell ranking: switched to composite of early availability, near-term capacity, and distance.
+- No score change.
+
+V15 (78.067 on hotspot_small)
+- Added cluster acceptance guard with local scorer to keep MILP only if it improves total score vs greedy.
+- Added exact local scoring in submission.py.
+- No change vs baseline on hotspot_small.
+
+V16 (78.067 on hotspot_small)
+- Reduced ROLLING_WINDOW (50->30) to shrink per-cluster MILP size.
+- No change; reverted later in V18.
+
+V17 (78.067 on hotspot_small)
+- Added switch penalty approximation across consecutive seconds to encourage fewer landing episodes.
+- No change on hotspot_small.
+
+V18 (78.067 on hotspot_small)
+- Increased ROLLING_WINDOW to 80 and stronger switch penalty.
+- No change.
+
+V19 (74.253 on hotspot1)
+- Evaluated current settings on hotspot1 (larger, biased).
+- No change vs baseline on this instance.
+
+V20 (81.810 on overlap1)
+- Generated overlap1.in (dense early starts). Baseline score recorded.
+
+V21 (81.810 on overlap1)
+- Increased ROLLING_WINDOW to 120.
+- No change.
+
+V22 (81.810 on overlap1)
+- Increased switch penalty weight.
+- No change.
+
+V23 (80.241 on wide_rects)
+- Generated wide_rects.in (very wide landing rectangles).
+- Baseline score recorded.
+
+V24 (80.241 on wide_rects)
+- Attempted to disable acceptance guard (always take MILP). No change.
+
+V25 (80.241 on wide_rects)
+- Expanded candidate pool: CAPACITY_BUFFER 2.0, MAX_SLOTS_PER_CELL 200.
+- No change.
+
+V26 (80.241 on wide_rects)
+- Explicitly set ACCEPT_GUARD = False in code; no score change.
+
+V27 (68.309 on narrow_rects)
+- Generated narrow_rects.in (tight landing rectangles), baseline score.
+
+V28 (68.309 on narrow_rects)
+- Reduced GREEDY_TOP_K to 30. No change.
+
+V29 (68.309 on narrow_rects)
+- Increased MILP time limit to 30s. No change.
+
+V30 (68.308 on narrow_rects)
+- Increased LOOKAHEAD_WINDOW 3 -> 5. Slight rounding difference.
