@@ -126,6 +126,13 @@ SWITCH_EPS_FACTOR = 0.6      # 切换阈值系数 - REDUCED from 1.2 for more fl
 BETA_HOP = 0.1               # 曼哈顿距离衰减系数 / Manhattan distance decay
 TOP_K = 10000                # 保留所有候选（对于500*500网格）| Keep many candidates for large grids
 
+# 【新增】可预见未来窗口（Future-window foresight） | Future Window Hyper-parameters
+H_WINDOW = 3                 # 往前看 H 秒的滚动窗口 | Look-ahead window (seconds)
+HB_RISING_BONUS = 1.4        # B/2 上升段(τ=2→3)的奖励 | Rising B/2 bonus
+HB_FALLING_PENALTY = -1.5    # B/2 下降段(τ=7→0)的惩罚 | Falling B/2 penalty
+FEASIBILITY_WINDOW = 10      # 可行性判断的时间窗口(秒) | Feasibility check window (seconds)
+FEASIBILITY_FACTOR = 1.0     # 可行性压力系数 | Feasibility pressure factor
+
 def delay_weight(t: int) -> float:
     # 延迟权重函数 | Delay weight function
     # 早期时刻权重更高（鼓励早传输）
@@ -150,6 +157,70 @@ def landing_switch_penalty(k_current:int) -> float:
     # Returns negative value (penalty) → encourage staying at same landing UAV
     k = max(1, k_current)
     return (1.0 / (k+1)) - (1.0 / k)
+
+def cap_window(uav: UAV, t: int, H: int) -> float:
+    """
+    【新增】计算 UAV 在时刻 t 往后 H 秒的总可用容量 | Calculate total available capacity for next H seconds
+    cap_window(u, t, H) = Σ_{k=0..H-1} b_value(u, t+k)
+
+    Args:
+        uav: UAV object
+        t: current time slot
+        H: look-ahead window (seconds)
+    Returns:
+        Total capacity in the next H seconds (Mbps)
+    """
+    total = 0.0
+    for k in range(H):
+        total += b_value(uav, t + k)
+    return total
+
+def is_tau_rising_hb(uav: UAV, t: int) -> bool:
+    """
+    【新增】判断当前 τ 是否为 B/2 上升段(τ=2)，下一秒将进入 B 段(τ=3) | Check if currently in rising B/2 phase
+    """
+    tau_now = (uav.phi + t) % 10
+    return tau_now == 2
+
+def is_tau_falling_hb(uav: UAV, t: int) -> bool:
+    """
+    【新增】判断当前 τ 是否为 B/2 下降段(τ=7)，即将进入 0 段 | Check if currently in falling B/2 phase
+    """
+    tau_now = (uav.phi + t) % 10
+    return tau_now == 7
+
+def feasibility_check(flow, uavs, flow2cands, t: int, T: int) -> float:
+    """
+    【新增】快速可行性判断：乐观上界估计流 flow 是否能在时间窗口内完成
+    Fast feasibility check: optimistic upper bound for flow completion
+
+    Returns:
+        feasibility_score ∈ [0, 1]:
+          1.0 = 充分(sufficient capacity), 0.5 = 边界(marginal), 0.0 = 紧缺(tight)
+    """
+    if flow.remain <= 1e-9:
+        return 1.0  # Already done
+
+    # 乐观上界：候选落地区域所有UAV的总容量（未来 FEASIBILITY_WINDOW 秒）
+    # Optimistic bound: sum of all candidate UAVs' capacity in future window
+    future_window_end = min(t + FEASIBILITY_WINDOW, T)
+    future_window_len = max(1, future_window_end - t)
+
+    # 计算所有候选落地的总容量上界（简单求和，不考虑竞争）
+    total_future_capacity = 0.0
+    for ell_idx in flow2cands.get(flow.f, []):
+        total_future_capacity += cap_window(uavs[ell_idx], t, future_window_len)
+
+    # 乐观评分：若充足，则 1.0；若紧缺，则更低
+    upper_bound = total_future_capacity
+    if upper_bound >= flow.remain * 2.0:
+        return 1.0  # Highly confident
+    elif upper_bound >= flow.remain:
+        return 0.75  # Marginal but possible
+    elif upper_bound >= flow.remain * 0.5:
+        return 0.5  # Tight, need to act
+    else:
+        return 0.2  # Very tight, critical
 
 # ==========================
 # Parsing & precompute
@@ -277,21 +348,42 @@ def run_scheduler(M,N,FN,T,uavs,coord2idx,flows):
         # Inertia bonus: if flow landed at this UAV in previous second, encourage continuity
         if last_used_map.get(flow.f) == ell_idx:
             bonus += INERTIA_BONUS
-        # 2) ETA感知：下一秒该落地的容量窗口
-        # ETA-aware bonus: check next second's capacity window
-        # flag==2 (full capacity B), flag==1 (half capacity B/2), flag==0 (zero capacity)
-        flag = cap_flag_next.get(ell_idx, 0)
-        if flag == 2:   bonus += ETA_BONUS_B     # 下秒有满容量 | Full capacity next second
-        elif flag == 1: bonus += ETA_BONUS_HB    # 下秒有半容量 | Half capacity next second
-        elif flag == 0: bonus += ETA_PENALTY_ZERO  # 下秒为 0 → 施加惩罚，避免选中
+
+        # 2) 【增强】ETA感知：基于未来 H 秒的滚动窗口容量
+        # 【ENHANCED】ETA-aware bonus: based on future H-second rolling window capacity
+        u = uavs[ell_idx]
+        cap_win = cap_window(u, t, H_WINDOW)
+        cap_now = b_value(u, t)
+
+        # 先判断当前是 B/2 的特殊段
+        tau_now = (u.phi + t) % 10
+
+        if tau_now == 2:  # 当前 B/2 上升段 | Current is B/2 rising phase
+            bonus += HB_RISING_BONUS
+        elif tau_now == 7:  # 当前 B/2 下降段 | Current is B/2 falling phase
+            bonus += HB_FALLING_PENALTY
+
+        # 再看整个窗口的容量情况
+        if cap_win > u.B * H_WINDOW * 0.8:  # 窗口容量充分 | Window has sufficient capacity
+            bonus += ETA_BONUS_B
+        elif cap_now <= 1e-9:  # 当前为 0 | Zero capacity now
+            bonus += ETA_PENALTY_ZERO
+        elif cap_now >= u.B * 0.4:  # 当前至少是 B/2 | Current is at least B/2
+            bonus += ETA_BONUS_HB
+
         # 3) 完成度奖励：快要完成的流优先级提高（帮助收尾）
         # Completion bonus: nearly-completed flows get slight boost (helps wrap up)
         remain_ratio = flow.remain / max(flow.Q_total, 1e-9)
         bonus += COMPLETE_BONUS_ALPHA * (1.0 - remain_ratio)
-        # 4) 【禁用】饥饿保护 → 只按优先级，不做公平补偿
+
+        # 4) 【新增】可行性约束：当可行性低时，提升选择压力
+        # 【NEW】Feasibility constraint: when feasibility is low, increase selection pressure
+        feas_score = feasibility_check(flow, uavs, flow2cands, t, T)
+        if feas_score < 0.3:
+            # 紧急情况：优先选择当前有容量的 | Emergency: prefer UAVs with current capacity
+            bonus += feas_score * 2.0 * cap_now
+        # 【禁用】饥饿保护 → 只按优先级，不做公平补偿
         # 【DISABLED】Starvation protection → allocate purely by priority, no fairness compensation
-        # if flow.starve_cnt >= STARVE_THRESH:
-        #     bonus += STARVE_BOOST
 
         return base_traffic + base_delay + base_dist + land_term + bonus
 
