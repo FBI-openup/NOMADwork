@@ -402,10 +402,10 @@ COMPLETE_BONUS_ALPHA = 0.05
 
 # Distance decay and candidate pruning
 BETA_HOP = 0.1
-GREEDY_TOP_K = 30
+GREEDY_TOP_K = 99
 
 # Short-horizon capacity lookahead bonus (encourage near-term capacity)
-LOOKAHEAD_WINDOW = 5  # seconds ahead including current
+LOOKAHEAD_WINDOW = 7  # seconds ahead including current
 LOOKAHEAD_BONUS_SCALE = 0.5
 
 
@@ -609,7 +609,7 @@ def _build_indices(cluster: Cluster, index: CandidateIndex):
     flow_cell: Dict[Tuple[int, Tuple[int, int]], List[Tuple[int, Tuple[int, int], int]]] = {}
     y_keys: List[Tuple[int, Tuple[int, int]]] = []
     seen_y = set()
-    ROLLING_WINDOW = 120
+    ROLLING_WINDOW = 200
 
     for flow_id in cluster.flow_ids:
         fc = index.flows.get(flow_id)
@@ -738,7 +738,7 @@ def solve_cluster(
     # Map (fid, cell, t) -> has u var
     u_exists = set(u_vars.keys())
     switch_penalty_terms = []
-    SWITCH_WEIGHT = 100.0 * 0.10  # even stronger weight toward stability
+    SWITCH_WEIGHT = 0.0  # disable switch penalty; rely on exact 1/k via z
     # For each consecutive pair of times, create s binary and link to differences where both sides exist
     for fid, times in flow_times.items():
         for i in range(1, len(times)):
@@ -884,12 +884,12 @@ def solve_cluster(
     if hasattr(pulp, "HiGHS_CMD"):
         # Prefer HiGHS when available; allow more time and tighter gap
         try:
-            solver = pulp.HiGHS_CMD(msg=False, timeLimit=30, options=["mip_rel_gap=0.0"])  # aim for exact
+            solver = pulp.HiGHS_CMD(msg=False, timeLimit=10, options=["mip_rel_gap=0.0"])  # aim for exact
         except TypeError:
             # Fallback signature without options param
-            solver = pulp.HiGHS_CMD(msg=False, timeLimit=30)
+            solver = pulp.HiGHS_CMD(msg=False, timeLimit=10)
     else:
-        solver = pulp.PULP_CBC_CMD(msg=False, timeLimit=30, gapRel=0.0)
+        solver = pulp.PULP_CBC_CMD(msg=False, timeLimit=10, gapRel=0.0)
     status = model.solve(solver)
     if pulp.LpStatus[status] not in {"Optimal", "Feasible"}:
         return _fallback(cluster, warm_start)
@@ -923,7 +923,7 @@ def solve_problem(problem: Problem) -> Dict[int, List[ScheduleSegment]]:
 
     assignments: Dict[int, List[ScheduleSegment]] = {}
     # Cluster-by-cluster with acceptance guard using local scorer
-    ACCEPT_GUARD = False
+    ACCEPT_GUARD = True
     for cluster in clusters:
         # Candidate 1: MILP solution
         milp_solution = solve_cluster(cluster, problem, candidate_index, capacity_table, warm_start)
@@ -946,6 +946,9 @@ def solve_problem(problem: Problem) -> Dict[int, List[ScheduleSegment]]:
     # Post-process to reduce landing switches and improve delay
     assignments = _postprocess_consolidate_landings(problem, assignments, capacity_table)
     assignments = _postprocess_left_shift(problem, assignments, capacity_table)
+
+    # Safety: enforce single landing cell per flow per time by keeping dominant segment
+    assignments = _enforce_single_cell_per_time(assignments)
 
     for flow in problem.flows:
         segs = assignments.get(flow.flow_id, [])
@@ -1095,21 +1098,17 @@ def _postprocess_consolidate_landings(
                 # Apply move
                 s.rate -= move
                 usage[((s.x, s.y), t)] = usage.get(((s.x, s.y), t), 0.0) - move
-                usage[(anchor, t)] = usage.get((anchor, t), 0.0) + move
                 free -= move
-                if anchor_seg is None:
-                    anchor_seg = ScheduleSegment(time=t, x=anchor[0], y=anchor[1], rate=move)
-                    bucket.append(anchor_seg)
-                    anchor_idx = len(bucket) - 1
-                else:
+                if anchor_seg is not None:
+                    usage[(anchor, t)] = usage.get((anchor, t), 0.0) + move
                     anchor_seg.rate += move
                 if free <= 1e-9:
                     break
             # Cleanup empty segments
-            by_time[t] = [s for s in bucket if s.rate > 1e-9]
+            new_bucket = [s for s in bucket if s.rate > 1e-9]
             # Enforce single segment per time by merging into anchor if any other remain and capacity allows
-            if len(by_time[t]) > 1 and anchor_seg is not None:
-                others = [s for s in by_time[t] if s is not anchor_seg]
+            if len(new_bucket) > 1 and anchor_seg is not None:
+                others = [s for s in new_bucket if s is not anchor_seg]
                 # Try to move the rest if any free left
                 free = capacity(anchor, t) - usage.get((anchor, t), 0.0)
                 for s in others:
@@ -1122,7 +1121,14 @@ def _postprocess_consolidate_landings(
                         usage[((s.x, s.y), t)] = usage.get(((s.x, s.y), t), 0.0) - move
                         usage[(anchor, t)] = usage.get((anchor, t), 0.0) + move
                         free -= move
-                by_time[t] = [s for s in by_time[t] if s.rate > 1e-9]
+                reduced = [s for s in by_time[t] if s.rate > 1e-9]
+                # If still more than one segment (capacity insufficient), revert to original bucket to keep validity
+                if len(reduced) > 1:
+                    by_time[t] = [s for s in bucket if s.rate > 1e-9]
+                else:
+                    by_time[t] = reduced
+            else:
+                by_time[t] = new_bucket
 
         # Rebuild segment list
         updated: List[ScheduleSegment] = []
@@ -1208,6 +1214,30 @@ def _postprocess_left_shift(
         new_assignments[flow.flow_id] = updated
 
     return new_assignments
+
+
+def _enforce_single_cell_per_time(assignments: Dict[int, List[ScheduleSegment]]) -> Dict[int, List[ScheduleSegment]]:
+    fixed: Dict[int, List[ScheduleSegment]] = {}
+    for fid, segs in assignments.items():
+        by_time: Dict[int, List[ScheduleSegment]] = {}
+        for s in segs:
+            by_time.setdefault(s.time, []).append(s)
+        new_list: List[ScheduleSegment] = []
+        for t, arr in by_time.items():
+            if len(arr) == 1:
+                new_list.append(arr[0])
+                continue
+            # Keep the segment with highest rate; drop others if on different cells
+            arr.sort(key=lambda s: s.rate, reverse=True)
+            top = arr[0]
+            # Merge any other segments on the same cell into top
+            for other in arr[1:]:
+                if (other.x, other.y) == (top.x, top.y):
+                    top.rate += other.rate
+            new_list.append(ScheduleSegment(time=t, x=top.x, y=top.y, rate=top.rate))
+        new_list.sort(key=lambda s: (s.time, s.x, s.y))
+        fixed[fid] = new_list
+    return fixed
 
 
 # ---------------------------------------------------------------------------

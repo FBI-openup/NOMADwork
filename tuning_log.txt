@@ -95,3 +95,33 @@ V29 (68.309 on narrow_rects)
 
 V30 (68.308 on narrow_rects)
 - Increased LOOKAHEAD_WINDOW 3 -> 5. Slight rounding difference.
+
+V31 (81.807 on overlap1)
+- Re-enabled acceptance guard and set MILP timeLimit to 10s; GREEDY_TOP_K back to 99.
+- Minor change vs baseline (rounding).
+
+V32 (72.749 on phase_stripes)
+- New instance with stripe-x phases, sparse B, pareto volumes, bimodal starts, wide rectangles.
+- Score recorded; MILP acceptance guard enabled.
+
+V33 (68.078 on phase_checker)
+- Checker phases, sparse B, pareto volumes, bimodal starts, tall rectangles.
+- Score recorded.
+
+V34 (72.749 on phase_stripes)
+- Increased ROLLING_WINDOW to 200; no change.
+
+V35 (68.078 on phase_checker)
+- Increased LOOKAHEAD_WINDOW to 7; no change.
+
+V36 (72.020 on ring_phases)
+- Generated ring_phases.in (ring phase pattern, sparse B). Score recorded.
+
+V37 (70.637 on phase_stripey)
+- Generated stripe-y phase instance. Score recorded.
+
+V38 (65.974 on huge_board)
+- Large board (60x30, 900 flows). Runtime ~1.5s; score recorded.
+
+V39 (73.460 on tall_rects)
+- Tall rectangles with stripe-x phases; score recorded.
