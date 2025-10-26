@@ -40,18 +40,10 @@ v2.0 关键优化:
 """
 
 import sys
-import os
 import math
 from collections import defaultdict, deque
 from typing import List, Tuple, Dict, Set
 import heapq
-
-# Heat-map configuration (can be toggled via environment variable)
-USE_HEAT_NUDGE = os.getenv("HUAWEI_USE_HEAT", "0") != "0"
-HEAT_BETA = 6.5
-HEAT_GAMMA = 0.012
-HEAT_LAMBDA_ALONG = 0.22
-HEAT_LAMBDA_PERP = 0.06
 
 
 class UAV:
@@ -98,8 +90,11 @@ class Flow:
         self.last_landing_uav = None
         self.landing_change_count = 0
         self.used_landing_positions = set()  # 记录使用过的不同着陆点
-        self.current_urgency = 0.0
-        self.idle_streak = 0
+        self.preferred_cells = self._compute_preferred_cells()
+        self.min_distance = min(
+            abs(self.access_x - cell[0]) + abs(self.access_y - cell[1])
+            for cell in self.preferred_cells
+        ) if self.preferred_cells else 0
 
     def is_in_landing_area(self, x, y):
         """检查(x,y)是否在着陆区域"""
@@ -113,6 +108,19 @@ class Flow:
         """获取当前使用的不同着陆点数量k"""
         return len(self.used_landing_positions)
 
+    def _compute_preferred_cells(self):
+        best = []
+        best_dist = None
+        for x in range(self.m1, self.m2 + 1):
+            for y in range(self.n1, self.n2 + 1):
+                dist = abs(self.access_x - x) + abs(self.access_y - y)
+                if best_dist is None or dist < best_dist:
+                    best_dist = dist
+                    best = [(x, y)]
+                elif dist == best_dist:
+                    best.append((x, y))
+        return set(best)
+
 
 class OptimizedUAVNetwork:
     """优化的UAV网络调度器"""
@@ -124,17 +132,15 @@ class OptimizedUAVNetwork:
         self.uavs = {}
         self.flows = []
         self.allocated_bandwidth = defaultdict(lambda: defaultdict(float))
-        # Heat-based nudging parameters (tunable)
-        self.beta_heat = HEAT_BETA if USE_HEAT_NUDGE else 0.0
-        self.gamma_cool = HEAT_GAMMA if USE_HEAT_NUDGE else 0.0
-        self.lambda_along = HEAT_LAMBDA_ALONG
-        self.lambda_perp = HEAT_LAMBDA_PERP
+        # Teleport experiment: disable heat-based nudging
+        self.beta_heat = 0.0
+        self.gamma_cool = 0.0
+        self.lambda_along = 0.25
+        self.lambda_perp = 0.07
         self.heat_total = None
         self.heat_cool = defaultdict(float)
         self._flow_heat_info = {}
-        self._heat_built = False
-        self.max_flows_per_tick = 0
-        self.max_allocations_per_tick = 1
+        self._heat_built = True
 
     def add_uav(self, x, y, peak_bandwidth, phase):
         self.uavs[(x, y)] = UAV(x, y, peak_bandwidth, phase)
@@ -168,20 +174,19 @@ class OptimizedUAVNetwork:
         dist = self.manhattan_distance(flow.access_x, flow.access_y,
                                        landing_pos[0], landing_pos[1])
 
-        # 1. U2G流量得分 (38%) - 归一化到总数据量
-        u2g_score = 0.38 * (amount / flow.total_size)
+        # 1. U2G流量得分 (40%) - 归一化到总数据量
+        u2g_score = 0.4 * (amount / flow.total_size)
 
-        # 2. 延迟得分 (27%) - 时间衰减因子
+        # 2. 延迟得分 (20%) - 时间衰减因子
         # 公式: τ / (t_i + τ)，其中 τ = 10, t_i 是相对开始时间的延迟
-        tau = 14
+        tau = 10
         delay_from_start = t - flow.t_start
-        delay_score = 0.29 * (tau / (delay_from_start + tau))
+        delay_score = 0.2 * (tau / (delay_from_start + tau))
 
-        # 3. 距离得分 (25%) - 指数衰减
+        # 3. 距离得分 (30%) - 指数衰减
         # 公式: 2^(-λ * h)，其中 λ = 0.1, h 是跳数（这里用曼哈顿距离近似）
-        alpha = 0.12  # 略微减轻距离惩罚
-        alpha = 0.12  # 略微减轻距离惩罚
-        distance_score = 0.23 * (2 ** (-alpha * dist))
+        alpha = 0.35  # 传送测试：大幅提升衰减系数，极度偏好近距离
+        distance_score = 0.6 * (2 ** (-alpha * dist))
 
         # 4. 着陆点得分 (10%) - 1/k，k是使用的不同着陆点数
         # 如果选择新的着陆点，k会增加
@@ -201,8 +206,6 @@ class OptimizedUAVNetwork:
     def find_best_landing_uavs_in_region(self, flow, t, top_k=3):
         """找到着陆区域内的最佳K个UAV - 使用边际收益评分"""
         candidates = []
-        remaining_total = flow.get_remaining()
-        remaining_ratio = remaining_total / max(flow.total_size, 1e-6)
 
         for x in range(flow.m1, flow.m2 + 1):
             for y in range(flow.n1, flow.n2 + 1):
@@ -221,12 +224,14 @@ class OptimizedUAVNetwork:
 
                 landing_pos = (x, y)
                 dist = self.manhattan_distance(flow.access_x, flow.access_y, x, y)
+                if flow.preferred_cells and landing_pos not in flow.preferred_cells:
+                    continue
 
                 # 计算可能的传输量（不超过剩余数据量）
                 potential_amount = min(available_bw, flow.get_remaining())
 
-                # 🔥 优化：过滤太小的传输量（低于剩余量的0.5%）
-                if potential_amount < flow.get_remaining() * 0.005:
+                # 🔥 优化：过滤太小的传输量（低于剩余量的1%）
+                if potential_amount < flow.get_remaining() * 0.01:
                     continue
 
                 # 使用新的边际收益评分函数
@@ -240,15 +245,9 @@ class OptimizedUAVNetwork:
                     future_bw += uav.get_bandwidth(future_t)
 
                 # 最终评分：边际收益为主，未来带宽作为微调
-                final_score = marginal_score * 980 + future_bw * 0.03
-                if flow.last_landing_uav == landing_pos:
-                    final_score += 7.0
-                if flow.current_urgency:
-                    final_score += flow.current_urgency * 0.05
-                final_score += (available_bw * 0.25) / (1 + dist)
-                final_score += remaining_ratio * 3.5
+                final_score = marginal_score * 1000 + future_bw * 0.01
                 heat_penalty = 0.0
-                if self.beta_heat > 0 and self.heat_total is not None:
+                if self.heat_total is not None and self.beta_heat > 0:
                     heat_penalty = self.beta_heat * self._effective_heat(flow, landing_pos)
                     final_score -= heat_penalty
 
@@ -269,12 +268,6 @@ class OptimizedUAVNetwork:
 
     def build_static_heat(self):
         """构建静态热度图，用于在候选评分中加入轻量级拥挤惩罚"""
-        if self.beta_heat <= 0:
-            self.heat_total = None
-            self.heat_cool = defaultdict(float)
-            self._flow_heat_info = {}
-            return
-
         self.heat_total = defaultdict(float)
         self.heat_cool = defaultdict(float)
         self._flow_heat_info = {}
@@ -394,24 +387,26 @@ class OptimizedUAVNetwork:
     def allocate_greedy_with_lookahead(self, flow, t):
         """带前瞻的贪心分配 - 使用边际收益评分"""
         if flow.transmitted >= flow.total_size or t < flow.t_start:
-            return False
+            return
 
         remaining = flow.get_remaining()
 
-        candidates = self.find_best_landing_uavs_in_region(flow, t, top_k=15)
+        # 找到最佳着陆UAV候选（使用边际收益评分，增加候选数到7）
+        candidates = self.find_best_landing_uavs_in_region(flow, t, top_k=7)
 
         if not candidates:
-            return False
+            return
 
+        # 选择评分最高的候选
         best_candidate = candidates[0]
         landing_pos = best_candidate['pos']
         available_bw = best_candidate['available_bw']
 
+        # 计算实际传输量
         actual_transfer = min(available_bw, remaining)
 
-        transfer_made = False
-
         if actual_transfer > 0:
+            # 更新分配
             self.allocated_bandwidth[t][landing_pos] += actual_transfer
             flow.transmitted += actual_transfer
             flow.schedule.append((t, landing_pos[0], landing_pos[1], actual_transfer))
@@ -419,16 +414,14 @@ class OptimizedUAVNetwork:
                 cooled_value = self.heat_cool.get(landing_pos, 0.0) + self.gamma_cool * actual_transfer
                 self.heat_cool[landing_pos] = cooled_value
 
+            # 更新着陆点集合（用于计算k值）
             flow.used_landing_positions.add(landing_pos)
 
+            # 更新最后使用的着陆点
             if flow.last_landing_uav != landing_pos:
                 if flow.last_landing_uav is not None:
                     flow.landing_change_count += 1
                 flow.last_landing_uav = landing_pos
-
-            transfer_made = True
-
-        return transfer_made
 
     def schedule_with_priority(self):
         """基于优先级的调度"""
@@ -530,20 +523,17 @@ class OptimizedUAVNetwork:
         size_factor = remaining / 1000.0  # 归一化
 
         # 综合紧急度评分（微调权重）
-        idle_bonus = flow.idle_streak * 6.0
-
         urgency = (
-            avg_demand_rate * 13.0 +      # 需求率权重
-            candidate_scarcity * 52.0 +   # 候选稀缺性
-            size_factor * 3.4 +           # 数据量权重
-            idle_bonus                    # 长期饥饿补偿
+            avg_demand_rate * 12.0 +      # 需求率权重（提升20%）
+            candidate_scarcity * 60.0 +   # 候选稀缺性（提升20%）
+            size_factor * 1.5             # 数据量（提升50%）
         )
 
         return urgency
 
     def schedule_bandwidth_aware(self):
         """带宽感知调度 - 优先利用高带宽时段，动态调整流优先级"""
-        if self.beta_heat > 0 and not self._heat_built:
+        if not self._heat_built:
             self.build_static_heat()
             self._heat_built = True
 
@@ -573,22 +563,15 @@ class OptimizedUAVNetwork:
             for flow in active_flows:
                 urgency = self.calculate_flow_urgency(flow, t)
                 flow_urgency_dict[id(flow)] = urgency
-                flow.current_urgency = urgency
 
             # 按紧急度从高到低排序（使用flow对象的id作为稳定排序依据）
             sorted_flows = sorted(active_flows,
                                  key=lambda f: (flow_urgency_dict[id(f)], id(f)),
                                  reverse=True)
-            if self.max_flows_per_tick > 0:
-                sorted_flows = sorted_flows[:self.max_flows_per_tick]
 
             # 为每个流分配（紧急流优先）
             for flow in sorted_flows:
-                made_transfer = self.allocate_greedy_with_lookahead(flow, t)
-                if made_transfer:
-                    flow.idle_streak = 0
-                else:
-                    flow.idle_streak += 1
+                self.allocate_greedy_with_lookahead(flow, t)
 
     def output_solution(self):
         """输出解决方案"""

@@ -1,11 +1,27 @@
 from __future__ import annotations
 
 import argparse
-import os
 import random
-import math
 import sys
-from typing import Tuple
+from typing import Tuple, List, Dict
+
+BANDWIDTH_PATTERN = [0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0, 0.5, 0.0, 0.0]
+PATTERN_SUM = sum(BANDWIDTH_PATTERN)
+
+
+def bandwidth_sum_over_horizon(B: float, phi: int, T: int) -> float:
+    if T <= 0 or B <= 0:
+        return 0.0
+    full_cycles = T // 10
+    remainder = T % 10
+    remainder_sum = 0.0
+    for i in range(remainder):
+        remainder_sum += BANDWIDTH_PATTERN[(phi + i) % 10]
+    return B * (full_cycles * PATTERN_SUM + remainder_sum)
+
+
+def clamp(value: int, lo: int, hi: int) -> int:
+    return max(lo, min(hi, value))
 
 
 def rand_rect(M: int, N: int, min_w: int, max_w: int, min_h: int, max_h: int) -> Tuple[int, int, int, int]:
@@ -51,9 +67,14 @@ def generate(
     volume_dist: str = "uniform", # uniform|pareto
     starts_dist: str = "uniform", # uniform|bimodal
     rect_shape: str = "uniform",  # uniform|tall|wide
+    saturation: float | None = None,
+    rect_near_access: int | None = None,
 ):
     # Header
     lines = [f"{M} {N} {FN} {T}"]
+
+    total_capacity = 0.0
+    uav_lines: List[str] = []
 
     # U2GL entries
     # Optionally create hotspot regions with boosted B
@@ -90,9 +111,12 @@ def generate(
             if random.random() < max(0.0, min(1.0, sparse_b)):
                 B = 1
             phase = phase_at(x, y)
-            lines.append(f"{x} {y} {B} {phase}")
+            total_capacity += bandwidth_sum_over_horizon(B, phase, T)
+            uav_lines.append(f"{x} {y} {B} {phase}")
 
     # Flows
+    flows: List[Dict[str, int]] = []
+    total_base_volume = 0.0
     for fid in range(1, FN + 1):
         # Access point: optionally bias near hotspots to create contention
         if hotspot_centers and random.random() < max(0.0, min(1.0, bias_access_p)):
@@ -122,8 +146,15 @@ def generate(
             q_total = max(size_min, min(size_max, q_total))
         else:
             q_total = random.randint(size_min, size_max)
-        # Landing rectangle: optionally bias around hotspots
-        if hotspot_centers and random.random() < max(0.0, min(1.0, bias_rect_p)):
+        # Landing rectangle
+        if rect_near_access is not None and rect_near_access >= 0:
+            r = rect_near_access
+            x1 = clamp(ax - r, 0, M - 1)
+            y1 = clamp(ay - r, 0, N - 1)
+            x2 = clamp(ax + r, x1, M - 1)
+            y2 = clamp(ay + r, y1, N - 1)
+            m1, n1, m2, n2 = x1, y1, x2, y2
+        elif hotspot_centers and random.random() < max(0.0, min(1.0, bias_rect_p)):
             cx, cy = random.choice(hotspot_centers)
             # Choose width/height within bounds, centered on (cx, cy)
             w = random.randint(max(1, rect_min_w), max(1, rect_max_w))
@@ -153,7 +184,60 @@ def generate(
                 m1, n1, m2, n2 = x1, y1, x2, y2
             else:
                 m1, n1, m2, n2 = rand_rect(M, N, rect_min_w, rect_max_w, rect_min_h, rect_max_h)
-        lines.append(f"{fid} {ax} {ay} {t_start} {q_total} {m1} {n1} {m2} {n2}")
+        flows.append(
+            {
+                "fid": fid,
+                "ax": ax,
+                "ay": ay,
+                "t_start": t_start,
+                "volume": q_total,
+                "m1": m1,
+                "n1": n1,
+                "m2": m2,
+                "n2": n2,
+            }
+        )
+        total_base_volume += q_total
+
+    if saturation is not None and total_capacity > 0 and total_base_volume > 0:
+        saturation = min(1.0, max(0.0, saturation))
+        target_total = saturation * total_capacity
+        if target_total <= 0:
+            target_total = total_base_volume
+        scale = target_total / total_base_volume
+        scaled_volumes: List[int] = []
+        for flow in flows:
+            new_volume = max(1, int(round(flow["volume"] * scale)))
+            scaled_volumes.append(new_volume)
+        diff = int(round(target_total)) - sum(scaled_volumes)
+        if diff != 0 and scaled_volumes:
+            descending = diff > 0
+            indices = sorted(range(len(flows)), key=lambda idx: flows[idx]["volume"], reverse=descending)
+            while diff != 0 and indices:
+                changed = False
+                for idx in indices:
+                    if diff > 0:
+                        scaled_volumes[idx] += 1
+                        diff -= 1
+                        changed = True
+                    else:
+                        if scaled_volumes[idx] > 1:
+                            scaled_volumes[idx] -= 1
+                            diff += 1
+                            changed = True
+                    if diff == 0:
+                        break
+                if not changed:
+                    break
+        for flow, new_volume in zip(flows, scaled_volumes):
+            flow["volume"] = new_volume
+
+    lines.extend(uav_lines)
+    for flow in flows:
+        lines.append(
+            f"{flow['fid']} {flow['ax']} {flow['ay']} {flow['t_start']} {flow['volume']} "
+            f"{flow['m1']} {flow['n1']} {flow['m2']} {flow['n2']}"
+        )
 
     return "\n".join(lines) + "\n"
 
@@ -186,6 +270,8 @@ def main() -> None:
     ap.add_argument("--volume-dist", type=str, default="uniform", help="Volume distribution: uniform|pareto")
     ap.add_argument("--starts-dist", type=str, default="uniform", help="Starts distribution: uniform|bimodal")
     ap.add_argument("--rect-shape", type=str, default="uniform", help="Landing rectangle shape: uniform|tall|wide")
+    ap.add_argument("--saturation", type=float, help="Target fraction of total capacity to fill (0-1)")
+    ap.add_argument("--rect-near-access", type=int, help="Constrain landing rectangles within this radius of access point")
 
     args = ap.parse_args()
     if args.seed is not None:
@@ -220,6 +306,8 @@ def main() -> None:
         volume_dist=args.volume_dist,
         starts_dist=args.starts_dist,
         rect_shape=args.rect_shape,
+        saturation=args.saturation,
+        rect_near_access=args.rect_near_access,
     )
     if args.output:
         with open(args.output, "w", encoding="utf-8") as f:

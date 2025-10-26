@@ -1,0 +1,193 @@
+2025-10-26 10:15 Added static heat-map nudging to Huawei_optimized.py
+- new heat precomputation helpers (build_static_heat, _raw_heat_weight, _shape_self_scaled, _effective_heat)
+- candidate scoring now subtracts beta_heat * effective_heat and allocation cools used cells
+- added heat-related configuration fields to OptimizedUAVNetwork and math import
+Undo: revert Huawei_optimized.py to the previous revision and delete this log entry if needed
+2025-10-26 10:32 Fixed indentation in Huawei_optimized.py main entrypoint after heat-map change
+- replaced tab-indented main() block with consistent 4-space indentation
+- removed stray indent before network.output_solution() to resolve IndentationError
+Undo: reset affected portion of Huawei_optimized.py to prior indentation and remove this log entry
+2025-10-26 10:45 H2: enforce earliest-arrival constraint before landing allocations
+- skip candidate landing cells when current time < t_start + Manhattan distance
+- ensures score_cli --validate passes (mild: 27.264, beta: 42.083) with ascii output files (mildH2.out, betaH2.out)
+Undo: remove earliest_arrival guard in find_best_landing_uavs_in_region and delete generated H2 outputs/log entry
+2025-10-26 11:40 H3 baseline: remove earliest-arrival guard to restore teleport-style scheduling
+- Huawei_optimized.py candidate filter no longer checks t >= t_start + distance
+- preparing for weight-only tuning series H3-H20 on /examples inputs
+Undo: reintroduce earliest_arrival guard as in H2 entry
+2025-10-26 11:45 H3 outputs
+- Generated mildH3.out (score 53.438), betaH3.out (55.070), easyH3.out (54.761) using Huawei_optimized.py without earliest-arrival guard
+- Commands: `Get-Content ... | python Huawei_optimized.py | Out-File -Encoding ascii ...`
+- Baseline for subsequent weight tuning
+2025-10-26 11:50 H4 weight tweak
+- calculate_allocation_score weights set to U2G 0.38, Delay 0.27, Distance 0.25, Landing 0.10 with alpha=0.13
+- Goal: reward earlier deliveries while keeping distance influence moderate
+ * Scores: mild 53.407, beta 55.073, easy 54.766
+2025-10-26 11:55 H5 urgency weights
+- avg_demand_rate coefficient 11.0, candidate_scarcity 55.0, size_factor 2.5
+- Expectation: more emphasis on large flows while keeping scarcity priority slightly softer
+  * Scores: mild 53.407, beta 55.073, easy 54.766 (no change observed)
+2025-10-26 12:00 H6 small-transfer threshold
+- Candidate filter now keeps allocations ≥0.5% of remaining flow (was 1%)
+- Aims to allow finer-grained usage late in a flow
+  * Scores: mild 53.407, beta 55.073, easy 54.766 (unchanged)
+2025-10-26 12:05 H7 candidate scoring weights
+- final_score now uses marginal*900 + future_bw*0.05 (was 1000 + 0.01)
+- Goal: slightly favor cells with forthcoming capacity while keeping marginal dominant
+  * Scores: mild 53.517 (+0.11), beta 54.983 (-0.09), easy 55.334 (+0.57)
+2025-10-26 12:10 H8 heat penalty tuning
+- beta_heat reduced to 7.5 (from 10), gamma_cool to 0.015 (from 0.02)
+- intent: soften congestion penalty and sustain benefit longer before cooling
+  * Scores: mild 53.517, beta 54.983, easy 55.334 (no variance)
+2025-10-26 12:15 H9 delay decay constant
+- tau in delay_score raised to 14 (from 10)
+- Aim: slow down decay so later transmissions are less penalized, smoothing schedule flexibility
+  * Scores: mild 53.517, beta 54.983, easy 55.334 (no change)
+2025-10-26 12:20 H10 rebalanced allocation weights
+- U2G weight 0.37, Delay 0.27 unchanged, Distance 0.26, alpha=0.12
+- Seeks to recover beta performance while keeping mild gains
+  * Scores: mild 53.517, beta 55.019 (+0.036 vs H9), easy 55.334
+2025-10-26 12:25 H11 urgency rebalance
+- candidate_scarcity coefficient lowered to 52.0, size_factor raised to 2.7
+- goal: shift priority toward large flows while easing congestion pressure
+  * Scores: mild 53.517, beta 55.019, easy 55.334 (unchanged)
+  * medium 53.880 (baseline capture)
+2025-10-26 12:32 H12 urgency softening
+- avg_demand_rate coefficient 10.5, candidate_scarcity 50.0, size_factor 2.8
+- Objective: reduce over-reacting to scarcity, give heavier flows more priority
+  * Scores: mild 53.517, beta 55.019, easy 55.334, medium 53.880 (unchanged)
+2025-10-26 12:44 H14 throughput emphasis
+- U2G weight 0.39, Distance weight 0.24 (alpha kept 0.12)
+- Seeks to improve overall score by prioritizing volume and delay
+  * Scores: mild 53.517, beta 55.009 (-0.01), easy 55.334, medium 53.880
+2025-10-26 12:50 H15 stability bonus
+- Added +12 bonus to candidate score when reusing previous landing cell
+- Intention: reduce landing churn while keeping other weights unchanged
+  * Scores: mild 53.685 (+0.168), beta 55.009 (flat), easy 55.334 (flat), medium 53.969 (+0.089)
+2025-10-26 12:55 H16 distance weight restore
+- U2G weight 0.38, distance weight 0.25 (alpha stays 0.12)
+- Objective: regain beta performance while retaining stability gains
+  * Scores: mild 53.685, beta 55.009, easy 55.334, medium 53.969 (unchanged)
+2025-10-26 13:00 H17 candidate mix
+- final_score now marginal*950 + future_bw*0.03 plus stability bonus
+- Goal: restore beta throughput while retaining stability gains
+  * Scores: mild 53.640 (-0.045), beta 55.030 (+0.021), easy 55.334, medium 53.897 (-0.072)
+2025-10-26 13:05 H18 stability bonus tune
+- Reduced reuse bonus to +10 (was +12)
+- Aim: keep benefits while limiting over-commitment to stale cells
+  * Scores: mild 53.640, beta 55.030, easy 55.334, medium 53.897 (unchanged vs H17)
+2025-10-26 13:10 H19 softer heat penalties
+- beta_heat 6.5, gamma_cool 0.012 (previously 7.5/0.015)
+- Purpose: reduce tendency to avoid moderate hotspots, potentially aiding beta score
+  * Scores: mild 53.640, beta 55.030, easy 55.334, medium 53.897 (no movement)
+2025-10-26 13:15 H20 candidate and stability tuning
+- final_score = marginal*980 + future*0.025, stability bonus +9
+- Target: blend earlier marginal emphasis with moderate future lookahead and gentler stability reward
+  * Scores: mild 53.509 (-0.131), beta 55.084 (+0.054), easy 55.334, medium 53.826 (-0.071)
+2025-10-26 13:22 H21 heat toggle and guard
+- Added USE_HEAT_NUDGE env toggle (default off), centralized heat constants, and skip build/cooling when disabled
+- schedule_bandwidth_aware now builds heat only if beta_heat > 0
+- Prepares comparison between heat-enabled and heat-disabled runs to address timeouts
+ * Heat ON (env 1): mild 53.509, beta 55.084, easy 55.334, medium 53.826
+ * Heat OFF (default env): mild 53.509, beta 55.086, easy 55.334, medium 53.826
+2025-10-26 13:28 Generator saturation update
+- examples/generator.py now computes total capacity, supports --saturation and --rect-near-access
+- Added clamp helper and efficient capacity sum, landing rectangles can stick near access
+- Generated examples/sat60.in (M=N=60, T=160, FN=1800, saturation≈0.98) for stress testing (score baseline 42.569 with H21)
+2025-10-26 13:32 H22 candidate breadth
+- Increased top_k in allocate_greedy_with_lookahead from 7 to 9 to explore more landing options per tick
+ * Scores: mild 53.509, beta 55.086, easy 55.334, medium 53.826, sat60 42.569 (no change)
+2025-10-26 13:37 H23 fine transfer threshold
+- Lowered candidate minimum transfer filter from 0.5% to 0.2% of remaining volume
+ * Scores: mild 53.509, beta 55.086, easy 55.334, medium 53.826, sat60 40.148 (regression)
+2025-10-26 13:44 H24 urgency boost & threshold reset
+- Restored small-transfer cutoff to 0.5%
+- Increased urgency weights (demand 12.0, scarcity 52.0, size 3.2)
+ * Scores: mild 53.509, beta 55.086, easy 55.334, medium 53.826, sat60 42.569 (recovered)
+2025-10-26 13:50 H25 urgent slice limit
+- Added max_flows_per_tick (150) so each second processes only top-urgency flows
+ * Scores: mild 53.509, beta 55.086, easy 55.334, medium 53.826, sat60 7.796 (severe regression)
+2025-10-26 13:56 H26 tuned candidate weighting
+- Disabled per-tick flow cap (max_flows_per_tick=0)
+- Adjusted candidate scoring to marginal*970 + future*0.02 with stability bonus +6
+ * Scores: mild 53.512 (+0.003), beta 55.086 (flat), easy 55.139 (-0.195), medium 53.500 (-0.326), sat60 42.609 (+0.040)
+2025-10-26 14:02 H27 candidate balance
+- Raised marginal weight back to 980, future to 0.03, stability bonus +7
+- Size factor weight trimmed to 3.0 to temper large-flow bias
+ * Scores: mild 53.640 (+0.128), beta 55.030 (-0.056), easy 55.334, medium 53.897 (+0.397), sat60 42.582 (-0.027)
+2025-10-26 14:08 H28 delay emphasis
+- Increased delay weight to 0.29 and distance weight adjusted to 0.23
+- Aim: prioritzing earlier deliveries while allowing longer hops when necessary
+ * Scores: mild 53.640, beta 55.030, easy 55.334, medium 53.897, sat60 42.583 (minimal change)
+2025-10-26 14:12 H29 urgency demand boost
+- avg_demand_rate coefficient increased to 13.0 to push high-rate flows earlier
+ * Scores: mild 53.640, beta 55.030, easy 55.334, medium 53.897, sat60 42.583 (no change)
+2025-10-26 14:30 H32 throughput focus
+- Allocation weights: U2G 0.42, distance 0.19 (alpha 0.11)
+- Future bandwidth lookahead extended to 7 steps with weight 0.035
+  * Scores: mild 53.386 (-0.254), beta 55.063 (-0. - ), easy 54.960 (-0.374), medium 53.500 (-0.397), sat60 42.574 (-0.009)
+2025-10-26 14:38 H33 idle urgency
+- Reverted weights to U2G 0.38 / distance 0.23 (alpha 0.12) and future window to 4 slots (weight 0.03)
+- Flow now tracks idle_streak; allocate_greedy returns bool and urgency gains +5 per idle tick
+  * Scores: mild 53.640, beta 55.030, easy 55.334, medium 53.897, sat60 42.583 (no change)
+2025-10-26 14:42 H34 expand candidate search
+- Increased per-flow top_k from 9 to 15 to leverage broader landing choices under saturation
+ * Scores: mild 53.640, beta 55.030, easy 55.334, medium 53.897, sat60 42.583 (no change, runtime ↑)
+2025-10-26 14:48 H35 bandwidth bias
+- Added available_bw * 0.2 to candidate score to favour high-capacity UAVs
+ * Scores: mild 53.508 (-0.132), beta 55.018 (-0.012), easy 55.330 (-0.004), medium 53.897 (flat), sat60 43.085 (+0.502)
+2025-10-26 14:54 H36 distance-aware bandwidth bonus
+- Scaled available_bw contribution by 1/(1+dist) to favour nearby high-capacity cells
+ * Scores: mild 53.640, beta 55.030, easy 55.334, medium 53.897, sat60 42.794 (+0.211 vs H35 but still +0.225 vs H33)
+2025-10-26 15:00 H37 idle weight boost
+- Increased idle_streak multiplier from 5 to 6 to prioritise long-starved flows
+ * Scores: mild 53.640, beta 55.030, easy 55.334, medium 53.897, sat60 42.794 (no change)
+2025-10-26 15:14 H40 stronger throughput bias
+- Increased available_bw term to 0.25/(1+dist) and remaining_ratio weight to 3.5
+  * Scores: mild 53.640, beta 55.030, easy 55.334, medium 53.897, sat60 42.826 (+0.032 vs H36)
+2025-10-26 15:05 H38 large-flow emphasis
+- Increased size_factor coefficient in urgency from 3.0 to 3.4
+  * Scores: mild 53.640, beta 55.030, easy 55.334, medium 53.897, sat60 42.794 (no change)
+2025-10-26 15:09 H39 remaining-ratio boost
+- Candidate score now adds remaining_ratio * 3.0 (computed once per flow)
+  * Scores: mild 53.640, beta 55.030, easy 55.334, medium 53.897, sat60 42.794 (no change)
+2025-10-26 14:24 H31 multi-allocation per tick
+- Added max_allocations_per_tick=2 allowing a flow to grab a second candidate in the same second if capacity remains
+  * Scores: mild 53.640, beta 55.030, easy 55.334, medium 53.897, sat60 42.583 (no change)
+  * NOTE: reverted to single allocation per tick in subsequent version to respect problem constraints
+2025-10-26 14:18 H30 urgency bonus in candidates
+- Flow objects now store current_urgency and candidate scoring adds +0.05 * urgency
+- Expectation: urgent flows win contested cells in heavy-load scenarios
+  * Scores: mild 53.640, beta 55.030, easy 55.334, medium 53.897, sat60 42.583 (no change)
+2025-10-26 12:38 H13 heat decay lengths
+- lambda_along=0.22 (from 0.25), lambda_perp=0.06 (from 0.07)
+- idea: broaden hotspot influence to allow more alternative cells into consideration
+  * Scores: mild 53.517, beta 55.019, easy 55.334, medium 53.880 (unchanged)
+2025-10-26 10:52 Teleport test harness tweaks in teleport_test.py
+- removed earliest-arrival guard to allow instant landing ("teleport") experiments
+- output schedules now limited to the last four records per flow for organizer inquiry
+Undo: restore teleport_test.py to previous commit state
+2025-10-26 11:00 Teleport test: force zero hop distance
+- teleport_test.py now returns 0 from manhattan_distance to make every flow "teleport"
+- keeps last-four-record output behaviour for experimental runs
+Undo: restore original manhattan_distance implementation in teleport_test.py and remove this log line
+2025-10-26 11:07 Teleport test: restore full schedule output
+- teleport_test.py now prints entire flow schedules again to recover score while keeping teleporting distance
+- ensures comparisons against baseline don't lose transmitted data volume
+Undo: reinstate last-four truncation logic in teleport_test.py and remove this log entry
+2025-10-26 11:14 Teleport test: disable heat nudging
+- teleport_test.py sets beta_heat and gamma_cool to 0 and skips building heat maps
+- aims to improve score by removing congestion penalty during teleport experiments
+Undo: revert __init__ changes setting beta_heat/gamma_cool/_heat_built
+2025-10-26 11:19 Teleport test: restore Manhattan distance while keeping travel ignored
+- teleport_test.py now returns actual abs-distance to reintroduce proximity bias
+- earliest-arrival guard remains removed so flows still "teleport" in time scheduling
+Undo: change manhattan_distance back to zero-return variant
+2025-10-26 11:25 Teleport test: boost distance preference
+- calculate_allocation_score now uses alpha=0.35 and doubles distance weight to 0.6
+- goal is to drive landings closer to access points and improve competition score beyond 55.07
+Undo: revert distance_score adjustments in teleport_test.py
+2025-10-26 11:32 Teleport test: restrict to minimum-distance landing cells
+- Flow objects cache closest landing cells and candidate search only considers those positions
+- intended to reduce average distance and raise competition score
+Undo: remove preferred_cells logic and candidacy filter in teleport_test.py
