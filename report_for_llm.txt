@@ -1,0 +1,286 @@
+Report for Successive LLM Iterations on Huawei UAV Scheduling Challenge
+Date: ${TODAY}
+
+TL;DR
+- Goal: Improve submission.py (MILP + greedy hybrid) to surpass prior_solver.py on the challenge site score while respecting a strict 5s execution budget. Keep MILP enabled (user constraint) but throttle and target it wisely. Maintain a robust, reproducible tuning process using synthetic instance generators and logs. This report consolidates all context, constraints, current implementation details, and an actionable roadmap for the next iterations up to V90 and beyond.
+
+Canonical Instructions and Constraints (Do Not Lose)
+- Main objective: Increase the challenge site score. Current bests observed:
+  - prior_solver.py ≈ 6227.72
+  - submission.py (latest) ≈ 5963.15
+- Hard runtime limit: 5 seconds per submission end‑to‑end. Timeouts occurred earlier; solution must stay under wall‑clock 5s on the judge.
+- MILP must NOT be disabled (explicit user instruction). It can be throttled, skipped on very large clusters, or windowed, but not globally disabled as a strategy.
+- Retain and evolve warm‑start from prior_solver.py logic (exact replication done) and use it both as warm start and fallback.
+- The scorer must match the problem_definition.md equations exactly. Our src/postprocess.py already matches, and submission.py embeds an equivalent local scorer for acceptance guard.
+- Logging and tuning are encouraged; keep detailed logs of versions, changes, and scores.
+- The generator in /examples can be extended for stress cases to differentiate solutions. Use it to craft targeted workloads.
+- The judge’s full problem constraints (from problem_definition.md):
+  - Grid up to 70x70 (note: the “reminder” lists ≤70; PDF elsewhere suggests up to 500x500, but the provided spec says <70; adhere to the provided reminder for public-site tasks).
+  - T up to 500.
+  - Up to 5000 flows.
+  - Capacity pattern is 10-second periodic with phases.
+  - Scoring: weighted throughput/delay/distance/landing with weights 0.4/0.2/0.3/0.1 scaled by 100, global weighted by flow volume fraction.
+- Acceptance guard principle: MILP cluster result should replace greedy only when it strictly improves scoring under the exact scoring function.
+
+Repository Overview
+- submission.py: Single-file submission integrating parsing, candidate generation, clustering, greedy warm start (replicated prior_solver), MILP model (PuLP), acceptance guard, postprocessing, timing, and output formatting.
+- src/ (Python library)
+  - capacity.py: Capacity table builder and lookup.
+  - candidates.py: Candidate generation baseline (used by src.solver and previously for reference).
+  - solver.py: Library MILP solver (not used in final submission, but useful reference).
+  - postprocess.py: Official scoring implementation used by CLI; mirrors problem_definition.md.
+  - scorer.py / score_cli.py: Scoring front-end used in tests.
+  - parser.py: Robust parsing for .in or JSON.
+  - validation.py: Schedule validity checks (single cell per flow per time, capacity constraints, etc.).
+- examples/: Collection of input instances and generator.py to synthesize diverse workloads.
+- tests/: Pytest suite (10 tests) to validate basic behavior.
+
+Current submission.py Architecture (as of V70+)
+1) Parsing
+   - Supports plaintext and JSON input according to problem spec.
+   - Constructs Grid, UAV, Flow, LandingZone, and Problem instances.
+
+2) Capacity Table
+   - CAPACITY_PATTERN = (0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0, 0.5, 0.0, 0.0)
+   - For each UAV (x,y), builds a list[float] of capacity per second for horizon.
+
+3) Candidate Generation
+   - Key Tunables:
+     - INITIAL_WINDOW = 40, WINDOW_EXPAND_STEP = 20
+     - CAPACITY_BUFFER = 1.3 (ensures enough available capacity in the window)
+     - MAX_SLOTS_PER_CELL = 120 (dynamic reduction to 80 if flows > 1500)
+     - MAX_CELLS_PER_FLOW = 50 (dynamic reduction to 30 if flows > 1500)
+   - _collect_time_slots: collects time slots above ~0 capacity from earliest arrival; expands window until buffer coverage or max window; truncates to cap.
+   - Candidate pruning: ranks cells by a composite priority (early availability, near-term capacity, distance), selects top-K.
+
+4) Clustering
+   - Groups flows sharing overlapping candidate landing cells via BFS to form clusters. Sorted by descending cluster size.
+
+5) Warm Starts (two modes)
+   - Full greedy warm start (replicated prior_solver.py):
+     - Global per-second priority queue over (flow, cell) pairs with a deterministic tie-break (ETA, distance score, inverse remaining, flow id).
+     - Priority components with weights mirroring scoring: traffic (1/Q), delay (10/(t+10)/Q), distance (2^-0.1h), landing inertia/switch penalties, capacity next-second foresight bonus.
+     - Allocates one cell per flow per second; respects per-cell capacity.
+   - Fast warm start (simplified):
+     - Uses pre-pruned slots per flow; local ordering; avoids global priority sorting.
+     - Chosen automatically when flows/horizon/total slot count exceed thresholds.
+
+6) MILP Model (per cluster)
+   - Variables:
+     - x_{f,(x,y),t} ≥ 0 (continuous amount allocated)
+     - u_{f,(x,y),t} ∈ {0,1} (activation if any positive x)
+     - y_{f,(x,y)} ∈ {0,1} (landing used by flow f)
+     - drop_f ≥ 0 (slack to absorb unmet volume)
+     - z_{f,k} ∈ {0,1} for k ∈ [1..K_max] (landing-episode piecewise for 1/k)
+   - Constraints:
+     - x ≤ capacity * u
+     - Per-flow per-time: Σ_cell u ≤ 1 (one landing per second)
+     - Flow completion: Σ x + drop = volume
+     - Link y and u: y ≤ Σ u over time for that cell; u ≤ y
+     - Per-cell capacity: Σ_f x ≤ capacity
+     - Landing episode 1/k modeling:
+       - Let sum_y = Σ y_{f,c}
+       - Σ_k z_{f,k} = 1; Σ_k k·z_{f,k} = sum_y
+   - Objective:
+     - Σ weighted_x_reward(x) + Σ weighted_landing_reward(z) − Σ slack_penalty(drop)
+     - weighted_x_reward per x uses problem scoring components (throughput/delay/distance), scaled and weighted by (flow.volume / total_volume).
+     - Landing term: 100 * 0.1 * (1/k) via z_{f,k} and weighted by flow.volume / total_volume.
+     - Slack penalty large (1e5) to discourage dropping.
+   - Rolling window: For each (flow,cell), only include time slots t ∈ [EA..EA+ROLLING_WINDOW]; window size scales with per-cluster timeLimit.
+   - MILP Safety Limits:
+     - Fallback to greedy if cluster has > MAX_CLUSTER_FLOWS (default 80) or variables > MAX_MILP_VARS (default 12k).
+
+7) Acceptance Guard
+   - Compute cluster-local score for MILP solution vs warm fallback using exact scoring components; accept MILP only if ≥ fallback.
+   - This avoids regressions under short budgets.
+
+8) Postprocessing
+   - Consolidation to dominant landing cell within capacity and respecting earliest arrival.
+   - Left-shift to earlier slots within capacity and earliest arrival constraints.
+   - Safety normalizer: enforce single landing cell per flow per time by keeping the dominant segment and merging same-cell duplicates.
+   - Greedy top-up: after MILP/fallback, add extra segments to under-delivered flows if capacity remains.
+
+9) Global Time Budget & Throttling
+   - total_budget (default 4.0s), cluster_floor (default 0.04s), proportional share by cluster size.
+   - Skip MILP per cluster if warm-start cluster score ≥ 92.5 (configurable).
+   - Disable MILP globally if:
+     - grid cell count > MILP_MAX_CELL_THRESHOLD (default 4000), or
+     - flow count > MILP_MAX_FLOW_THRESHOLD (default 2000), or
+     - total candidate slots > MILP_MAX_SLOT_THRESHOLD (default 160k).
+   - Cap number of clusters solved by MILP to MILP_MAX_CLUSTERS (default 200); fallback for the tail.
+
+10) Timing Instrumentation
+   - SUBMISSION_TIMING=1 emits to stderr: TIMING warm=… milp=… fallback=… score=… post=…
+   - Observations:
+     - Large instances are dominated by warm-start preproc (slot collection, ranking, and allocation); MILP time often near zero due to throttling or guard.
+
+Environment Variables (Tuning Knobs)
+- MILP_TOTAL_BUDGET (default 4.0)
+- MILP_CLUSTER_FLOOR (default 0.04)
+- MAX_CLUSTER_FLOWS (default 80)
+- MAX_MILP_VARS (default 12000)
+- MILP_MAX_CLUSTERS (default 200)
+- MILP_MAX_CELL_THRESHOLD (default 4000)
+- MILP_MAX_FLOW_THRESHOLD (default 2000)
+- MILP_MAX_SLOT_THRESHOLD (default 160000)
+- MILP_CLUSTER_SKIP_SCORE (default 92.5)
+- SUBMISSION_TIMING (1 to enable timing output)
+
+Versioned Tuning Log (Summarized)
+Note: Detailed entries recorded in tuning_log.txt. Below is an aggregated view for continuity.
+
+V5–V14: Baseline improvements
+- Added true warm-start seeding to MILP (x/u/y/drop and z); tightened MIP gap/time; relaxed candidate pruning modestly; added consolidation and left-shift postprocess; acceptance guard added.
+- Score on beta.in remained ~42.685; greedy very strong, MILP mostly neutral.
+
+V15–V22: Generator + acceptance guard + switch penalties
+- Added cluster acceptance guard and candidate ranking improvements; introduced switch penalty approximation (later disabled, relying on exact z_{f,k}).
+- Generator created hotspot_small/overlap1/wide_rects variations; scores: hotspot_small ≈ 78.067, overlap1 ≈ 81.810.
+
+V23–V30: Wider experiments, timeLimit, rolling window
+- Widened rolling windows, varied MILP timeLimit; acceptance guard maintained. Scores unchanged on tested sets; greedy dominance persists.
+
+V31–V40: Big instances, skip invalid postprocess states
+- Large boards (phase_stripes, checker) tested; acceptance guard refactored to cluster-only scoring; added safety pass to fix multi-cell per time; holes_heavy now validates; scores 70–73 region.
+
+V41–V50: More varied generators and reliability
+- late_burst (56.5), many_hotspots (~69.4), small_dense (~81.7), etc. Submission runtime remained good; MILP often skipped when not helpful.
+
+V51–V55: Runtime profiling, refined windows/allocations
+- SUBMISSION_TIMING added; refined rolling windows (50/110/160) and cluster floor; minimal score changes; confirmed warm-start as bottleneck on larger instances; MILP often near-zero time under guard.
+
+V56–V60: Second-pass MILP rerun + more instances
+- Added leftover-budget rerun on top cluster; no consistent score gains; runtime within budget; added tough phased instances.
+
+V61–V64: Near-limit boards
+- checker_dense, late_checker; mega68 and mega120 probed. For mega120, MILP disabled automatically; runtime ~6s locally was I/O heavy; shows potential judge hazard for large outputs.
+
+V65–V70: Dynamic caps, MILP throttling, greedy fill
+- Candidate caps reduced for flows > 1500; added MAX_GLOBAL_MILP_CLUSTERS and per-cluster skip threshold when warm-start is already ≥92.5; added greedy top-up for deficits; reduced cluster floor to 0.04s.
+
+Observed Scores (Selected)
+- prior_solver.py ≈ 6227.72 on challenge site (baseline target to beat).
+- submission.py latest ≈ 5963.15 on challenge site (MILP throttled but active where useful).
+- Synthetic instances: overlap1 ~81.8, hotspot_small ~78.1, wide_rects ~80.2, phase_stripes ~72.7, checker ~68.1, ring ~72.0, etc.
+
+Why MILP May Still Trail prior_solver
+1) Objective misalignment in scarce time: Even with exact 1/k via z_{f,k}, the per-slot linearized objective may still not capture the full future opportunity cost under tight time; greedy’s foresight bonuses mimic the capacity waveform more directly.
+2) Windowing misses: Rolling windows cap explore depth; early arrivals with tight windows can lock suboptimal cell choices; greedy’s global second-by-second ordering can opportunistically grab high peaks.
+3) Incumbent propagation: We seed x/u/y and z, but we don’t add no-good cuts to explore alternative neighborhoods; solver may just confirm the warm-start rather than improving it.
+4) Constraint set could be strengthened: there’s no explicit symmetry breaking, no combinatorial cuts on switches beyond z_{f,k}; LP relaxation could still be loose in u-y-x relationships.
+5) Acceptance guard locality: It measures cluster-local improvement; global interactions (overlapping capacity across clusters) may reduce total improvement potential acceptance sees.
+
+Actionable Next Steps (V71–V90)
+Track any score/runtimes in tuning_log.txt. Keep ≤5s budget. Do not disable MILP.
+
+MILP Model Enhancements
+1) Episode-based 1/k via switches s_{f,t}
+   - Define s_{f,t} ∈ {0,1} to detect transitions: s_{f,t} ≥ u_{f,c,t} − u_{f,c,t-1} for all cells c; s_{f,t} ≥ u_{f,c,t-1} − u_{f,c,t}. Then k = 1 + Σ_t s_{f,t}.
+   - Replace z_{f,k} with an SOS2 or piecewise linear on k inverse (or retain z and set sum_k k z_{f,k} = 1 + Σ s_{f,t}).
+   - Expected: Better differentiation between 2 vs 3+ episodes, closer to scorer semantics.
+
+2) Strengthen y-u consistency
+   - Add y_{f,c} ≥ u_{f,c,t} ∀t and y_{f,c} ≤ Σ_t u_{f,c,t}. Already enforced partially; tighten with upper/lower linking bounds across limited windows.
+
+3) Add simple cuts
+   - For each (f,t), if earliest arrival ea is far, forbid u_{f,c,t} for t<ea (already implicitly true via window).
+   - For each (f,t), if Σ_c capacity_{c,t} insufficient for many flows, add packing-like cuts to reduce branching.
+
+4) Improve objective calibration
+   - Rebalance per-slot distance term to favor cells that persist across slots (introduce a minor persistence bonus term linear in u_{f,c,t}+u_{f,c,t+1}).
+   - Scale delay weights per flow based on start time quantiles (give larger delay weight to early-start flows that can score more via early slots).
+
+5) Large Neighborhood Search (LNS)-like MILP
+   - Fix all flows in cluster to warm start except a small subset (worst-by-score or highest k). Re-opt MILP on that subset only (subset of x/u/y variables active), then accept if improved.
+   - Rotate subsets across clusters to fit the 5s budget.
+
+6) Adaptive rolling window
+   - Determine per-flow window width from (volume, earliest arrival slack, local capacity density). Large-volume flows get bigger windows; small ones get tight windows.
+
+7) Column generation flavor
+   - Treat a feasible per-flow per-cell schedule pattern as a column; generate top K columns per flow (greedy); solve a master LP/MIP selecting columns with continuity penalties. Too big to code fully now but a simplified pattern selection (few patterns per flow) could be feasible in 5s.
+
+Greedy/Warm Start Enhancements
+8) Learnable ETA-aware foresight
+   - Measure 2-step lookahead (t+1, t+2) capacity shape rather than only next second; adaptively adjust ETA_BONUS based on phase continuity intervals.
+
+9) Peak-pair bundling
+   - When a flow is placed at time t, preferentially plan placement at t+10 (same phase index), creating stable patterns reducing k. Implement as a tiny “reservation” in the greedy that MILP can later relax.
+
+Acceptance and Postprocessing
+10) Acceptance tie-break on global score delta
+   - If cluster scores tie within epsilon, accept whichever yields fewer episodes (proxy for landing term) or better delay; integrate quick approximate diff to break ties consistently toward MILP.
+
+11) Postprocess with score guard
+   - Evaluate the postprocess changes using the scorer and roll back if they reduce the cluster/local score.
+
+Runtime and Memory Safety
+12) Pre-flight estimator
+   - Before MILP, estimate var/constraint counts; if exceeding thresholds for the cluster’s timeLimit, reduce rolling window or temporarily coarsen by skipping half of the low-capacity slots.
+
+13) Parallel-friendly staging (future)
+   - If infra allows, run greedy and MILP on distinct clusters in parallel; otherwise simulate by slicing clusters and interleaving runs with short timeLimits (requires careful budget bookkeeping).
+
+Generator Strategy for Differentiation
+14) “Capacity saturation corridor” instances
+   - Large rectangles around peak phases that encourage multiple valid choices; aim for scenarios where greedy’s local priority can choose differently than MILP’s global weighing, highlighting benefits of MILP on k and delay.
+
+15) “Late rich peaks”
+   - Start flows just before rich capacity windows; greedy may overfit immediate peaks, while MILP could plan stable episodes yielding better k penalty.
+
+16) “Sparse holes with bottlenecks”
+   - Introduce sparse B holes row/column-wise, forcing careful channeling; MILP can resolve better by evenly scheduling across windows.
+
+Checklists (for rapid experiments)
+- Fast-run sanity (local):
+  - SUBMISSION_TIMING=1 Get-Content examples/overlap1.in | python submission.py > $null
+  - python -m src.score_cli --input examples/overlap1.in --schedule examples/overlap1Vxx.out --validate
+
+- Big-run sanity:
+  - generate 60x30 ~900 flows; confirm <2s E2E local.
+  - generate 68x68 2500 flows; confirm ~3–4s E2E local; MILP mostly skipped.
+
+- Challenge submission prep:
+  - Ensure env defaults: MILP_TOTAL_BUDGET=4.0, MILP_CLUSTER_FLOOR=0.04, cluster skip at 92.5, MAX_CLUSTER_FLOWS=80.
+  - Confirm acceptance guard and safety passes are active.
+
+Open Risks and Mitigations
+- Output size for huge instances dominates runtime; avoid giant outputs for local tests.
+- Rolling window may prune too aggressively hurting potential gains; mitigate with adaptive windows.
+- MILP skip threshold (≥92.5) might occasionally skip small gains; consider per-instance tuning.
+
+Commands and Paths (Reference)
+- Submission run: python submission.py < input.in > output.out
+- Score run: python -m src.score_cli --input examples/gen1.in --schedule examples/gen1p.out --validate
+- Timing env: set SUBMISSION_TIMING=1
+- Generator (examples/generator.py) supports:
+  - --phase-mode random|stripe-x|stripe-y|checker|ring
+  - --sparse-b, --volume-dist uniform|pareto, --starts-dist uniform|bimodal, --rect-shape uniform|tall|wide
+  - hotspot options and biases for access/rectangles.
+
+Key Code Locations (submission.py)
+- Candidate caps and MILP thresholds: around lines ~200–230 and ~1005–1012
+- _build_indices with rolling window: ~660–690
+- MILP model build and solver call: ~880–950
+- Acceptance guard and scoring: ~1033–1060
+- Postprocess and safety: ~720–860
+- Greedy top-up: ~810–860
+
+Immediate To‑Dos for Next Session (V71–V75)
+1) Implement episode-based s_{f,t} switches for k, integrated with z_{f,k} or direct 1/k piecewise.
+2) Add per-flow adaptive rolling windows and a per-cluster preflight estimation of complexity; auto-reduce windows for heavy clusters.
+3) Add LNS-style re-optimization on a small subset of worst flows in each cluster; measure delta under guard.
+4) Try limited no-good cuts: if MILP returns the same x pattern as warm start for a cluster, add a simple cut (e.g., Σ selected u ≤ (selected_count−1)) for one iteration if time allows.
+5) Evaluate the top-up stage with score deltas; accept only if score improves.
+
+Appendix: Problem Scoring Formula
+- Per-flow composite score:
+  composite = 100 * (0.4 * throughput + 0.2 * delay + 0.3 * distance + 0.1 * landing)
+  throughput = min(1, Σ q_i / Q_total)
+  delay = Σ (10 / (t_i + 10)) * (q_i / Q_total)
+  distance = Σ (q_i / Q_total) * 2^{-0.1 * d_i}
+  landing = 1 / k, where k is number of landing episodes (unique consecutive landing cells).
+- Global total = Σ_j (Q_total,j / Σ_j Q_total,j) * score_j
+
+End of Report
+

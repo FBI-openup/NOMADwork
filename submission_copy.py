@@ -15,14 +15,8 @@ from __future__ import annotations
 
 import json
 import sys
-import os
-import time
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Tuple
-
-
-_DEBUG_TIMING_ENV = os.getenv("SUBMISSION_TIMING")
-DEBUG_TIMING = bool(_DEBUG_TIMING_ENV and _DEBUG_TIMING_ENV.lower() not in {"0", "false", "no"})
 
 try:
     import pulp
@@ -203,15 +197,10 @@ EPSILON = 1e-6
 # Candidate generation / solver tuning
 INITIAL_WINDOW = 40              # seconds inspected before expansion
 WINDOW_EXPAND_STEP = 20          # growth step when capacity is insufficient
-CAPACITY_BUFFER = 1.3            # moderate expansion; keeps candidate size reasonable
+CAPACITY_BUFFER = 2.0            # expand more aggressively to include more slots
 MAX_WINDOW_SECONDS = None        # optional hard ceiling (None -> horizon)
-MAX_SLOTS_PER_CELL = 120         # cap on time slots retained per landing cell
+MAX_SLOTS_PER_CELL = 200         # keep more time slots per landing cell
 MAX_CELLS_PER_FLOW = 50          # cap on landing cells retained per flow
-
-# MILP safety limits (environment overrides possible)
-MAX_CLUSTER_FLOWS = int(os.getenv("MAX_CLUSTER_FLOWS", "80"))
-MAX_MILP_VARS = int(os.getenv("MAX_MILP_VARS", "12000"))
-MAX_GLOBAL_MILP_CLUSTERS = int(os.getenv("MILP_MAX_CLUSTERS", "200"))
 
 # Objective tuning
 DELAY_WEIGHT_MULTIPLIER = 1    # emphasise early transmissions
@@ -312,9 +301,6 @@ def _collect_time_slots(
 
 def build_candidate_index(problem: Problem, table: Dict[Tuple[int, int], List[float]]) -> CandidateIndex:
     horizon = problem.grid.horizon
-    total_flows = len(problem.flows)
-    slot_cap = MAX_SLOTS_PER_CELL if total_flows <= 1500 else min(MAX_SLOTS_PER_CELL, 80)
-    cell_cap = MAX_CELLS_PER_FLOW if total_flows <= 1500 else min(MAX_CELLS_PER_FLOW, 30)
     flow_map: Dict[int, FlowCandidate] = {}
     for flow in problem.flows:
         slot_map: Dict[Tuple[int, int], List[int]] = {}
@@ -323,14 +309,14 @@ def build_candidate_index(problem: Problem, table: Dict[Tuple[int, int], List[fl
                 continue
             slots = _collect_time_slots(flow, cell, horizon, table)
             if slots:
-                slot_map[cell] = slots[:slot_cap]
-        if len(slot_map) > cell_cap:
+                slot_map[cell] = slots
+        if len(slot_map) > MAX_CELLS_PER_FLOW:
             ranked = sorted(
                 slot_map.items(),
                 key=lambda item: _cell_priority_score(flow, item[1], item[0], table),
                 reverse=True,
             )
-            slot_map = dict(ranked[:cell_cap])
+            slot_map = dict(ranked[:MAX_CELLS_PER_FLOW])
         flow_map[flow.flow_id] = FlowCandidate(flow=flow, time_slots=slot_map)
     return CandidateIndex(flows=flow_map)
 
@@ -420,7 +406,7 @@ GREEDY_TOP_K = 99
 
 # Short-horizon capacity lookahead bonus (encourage near-term capacity)
 LOOKAHEAD_WINDOW = 7  # seconds ahead including current
-LOOKAHEAD_BONUS_SCALE = 0.4
+LOOKAHEAD_BONUS_SCALE = 0.5
 
 
 def _delay_weight(t: int) -> float:
@@ -602,51 +588,6 @@ def _build_greedy_warm_start(problem: Problem, table: Dict[Tuple[int, int], List
     return assignments
 
 
-def _build_warm_start_fast(
-    problem: Problem,
-    index: CandidateIndex,
-    table: Dict[Tuple[int, int], List[float]],
-) -> Dict[int, List[ScheduleSegment]]:
-    # Faster warm start using pre-pruned candidate slots without global per-second ordering.
-    remaining = {cell: caps.copy() for cell, caps in table.items()}
-    assignments: Dict[int, List[ScheduleSegment]] = {}
-    for flow in sorted(problem.flows, key=lambda f: f.start_time):
-        fc = index.flows.get(flow.flow_id)
-        if fc is None:
-            assignments[flow.flow_id] = []
-            continue
-        ordered_cells = sorted(
-            fc.time_slots.items(),
-            key=lambda item: _score_cell(flow, item[1], item[0], table),
-            reverse=True,
-        )
-        segments: List[ScheduleSegment] = []
-        remaining_volume = flow.volume
-        used_times = set()
-        for cell, slots in ordered_cells:
-            if remaining_volume <= EPSILON:
-                break
-            ea = flow.earliest_arrival(cell)
-            for time_slot in slots:
-                if time_slot < ea or time_slot in used_times:
-                    continue
-                available = remaining[cell][time_slot]
-                if available <= EPSILON:
-                    continue
-                take = min(available, remaining_volume)
-                if take <= EPSILON:
-                    continue
-                remaining[cell][time_slot] -= take
-                segments.append(ScheduleSegment(time=time_slot, x=cell[0], y=cell[1], rate=take))
-                used_times.add(time_slot)
-                remaining_volume -= take
-                if remaining_volume <= EPSILON:
-                    break
-        segments.sort(key=lambda seg: (seg.time, seg.x, seg.y))
-        assignments[flow.flow_id] = segments
-    return assignments
-
-
 def build_warm_start(
     problem: Problem,
     index: CandidateIndex,
@@ -661,14 +602,14 @@ def build_warm_start(
 # ---------------------------------------------------------------------------
 
 
-def _build_indices(cluster: Cluster, index: CandidateIndex, rolling_window: int | None = None):
+def _build_indices(cluster: Cluster, index: CandidateIndex):
     x_keys: List[Tuple[int, Tuple[int, int], int]] = []
     flow_time: Dict[Tuple[int, int], List[Tuple[int, Tuple[int, int], int]]] = {}
     cell_time: Dict[Tuple[Tuple[int, int], int], List[Tuple[int, Tuple[int, int], int]]] = {}
     flow_cell: Dict[Tuple[int, Tuple[int, int]], List[Tuple[int, Tuple[int, int], int]]] = {}
     y_keys: List[Tuple[int, Tuple[int, int]]] = []
     seen_y = set()
-    ROLLING_WINDOW = rolling_window if rolling_window is not None else 200
+    ROLLING_WINDOW = 200
 
     for flow_id in cluster.flow_ids:
         fc = index.flows.get(flow_id)
@@ -681,7 +622,7 @@ def _build_indices(cluster: Cluster, index: CandidateIndex, rolling_window: int 
             limit = ea + ROLLING_WINDOW
             for time_slot in slots:
                 if time_slot > limit:
-                    break
+                    continue
                 key = (flow_id, cell, time_slot)
                 x_keys.append(key)
                 flow_time.setdefault((flow_id, time_slot), []).append(key)
@@ -718,18 +659,12 @@ def solve_cluster(
     index: CandidateIndex,
     table: Dict[Tuple[int, int], List[float]],
     warm_start: Dict[int, List[ScheduleSegment]],
-    *,
-    time_limit: float = 1.0,
-    rolling_window: int | None = None,
 ) -> Dict[int, List[ScheduleSegment]]:
     if pulp is None:
         return _fallback(cluster, warm_start)
 
     flow_lookup = {flow.flow_id: flow for flow in problem.flows if flow.flow_id in cluster.flow_ids}
-    x_keys, flow_time, cell_time, flow_cell, y_keys = _build_indices(cluster, index, rolling_window)
-
-    if len(cluster.flow_ids) > MAX_CLUSTER_FLOWS or len(x_keys) > MAX_MILP_VARS:
-        return _fallback(cluster, warm_start)
+    x_keys, flow_time, cell_time, flow_cell, y_keys = _build_indices(cluster, index)
 
     model = pulp.LpProblem("cluster", pulp.LpMaximize)
     x_vars = pulp.LpVariable.dicts("x", x_keys, lowBound=0.0)
@@ -949,12 +884,12 @@ def solve_cluster(
     if hasattr(pulp, "HiGHS_CMD"):
         # Prefer HiGHS when available; allow more time and tighter gap
         try:
-            solver = pulp.HiGHS_CMD(msg=False, timeLimit=max(0.05, float(time_limit)), options=["mip_rel_gap=0.01"])  # tighter but bounded
+            solver = pulp.HiGHS_CMD(msg=False, timeLimit=10, options=["mip_rel_gap=0.0"])  # aim for exact
         except TypeError:
             # Fallback signature without options param
-            solver = pulp.HiGHS_CMD(msg=False, timeLimit=max(0.05, float(time_limit)))
+            solver = pulp.HiGHS_CMD(msg=False, timeLimit=10)
     else:
-        solver = pulp.PULP_CBC_CMD(msg=False, timeLimit=max(0.05, float(time_limit)), gapRel=0.01)
+        solver = pulp.PULP_CBC_CMD(msg=False, timeLimit=10, gapRel=0.0)
     status = model.solve(solver)
     if pulp.LpStatus[status] not in {"Optimal", "Feasible"}:
         return _fallback(cluster, warm_start)
@@ -981,179 +916,44 @@ def solve_cluster(
 
 
 def solve_problem(problem: Problem) -> Dict[int, List[ScheduleSegment]]:
-    timing_events = None
-    if DEBUG_TIMING:
-        timing_events = {"warm": 0.0, "milp": 0.0, "fallback": 0.0, "score": 0.0, "post": 0.0}
-
-    def _timing_add(key: str, value: float) -> None:
-        if timing_events is not None:
-            timing_events[key] = timing_events.get(key, 0.0) + value
-
     capacity_table = build_capacity_table(problem)
     candidate_index = build_candidate_index(problem, capacity_table)
     clusters = cluster_flows(candidate_index)
-    # Choose warm-start strategy based on problem scale
-    total_slots = 0
-    for fc in candidate_index.flows.values():
-        for slots in fc.time_slots.values():
-            total_slots += len(slots)
-    use_fast_warm = (len(problem.flows) > 400) or (problem.grid.horizon > 200) or (total_slots > 200_000)
-    t_ws = time.perf_counter()
-    warm_start = (
-        _build_warm_start_fast(problem, candidate_index, capacity_table)
-        if use_fast_warm
-        else build_warm_start(problem, candidate_index, capacity_table)
-    )
-    _timing_add("warm", time.perf_counter() - t_ws)
+    warm_start = build_warm_start(problem, candidate_index, capacity_table)
 
-    cell_count = problem.grid.rows * problem.grid.cols
-    enable_milp = True
-    if cell_count > int(os.getenv("MILP_MAX_CELL_THRESHOLD", "4000")):
-        enable_milp = False
-    if len(problem.flows) > int(os.getenv("MILP_MAX_FLOW_THRESHOLD", "2000")):
-        enable_milp = False
-    if total_slots > int(os.getenv("MILP_MAX_SLOT_THRESHOLD", "160000")):
-        enable_milp = False
-
-    # Global time budgeting to fit 5s wall-clock
     assignments: Dict[int, List[ScheduleSegment]] = {}
+    # Cluster-by-cluster with acceptance guard using local scorer
     ACCEPT_GUARD = True
-    total_budget = float(os.getenv("MILP_TOTAL_BUDGET", "4.0"))
-    cluster_floor = float(os.getenv("MILP_CLUSTER_FLOOR", "0.04"))
-    start_time = time.perf_counter()
-    total_flows = len(problem.flows)
-    total_volume = sum(flow.volume for flow in problem.flows) or 1.0
-    flow_lookup_all = {flow.flow_id: flow for flow in problem.flows}
+    for cluster in clusters:
+        # Candidate 1: MILP solution
+        milp_solution = solve_cluster(cluster, problem, candidate_index, capacity_table, warm_start)
+        cand1 = {fid: segs[:] for fid, segs in assignments.items()}
+        for fid, segs in milp_solution.items():
+            cand1.setdefault(fid, []).extend(segs)
+        score1 = _compute_total_score(problem, cand1)
 
-    def _cluster_score(flow_ids: List[int], solution: Dict[int, List[ScheduleSegment]]) -> float:
-        score = 0.0
-        for fid in flow_ids:
-            segs = solution.get(fid, [])
-            flow = flow_lookup_all[fid]
-            flow_score, *_ = _compute_flow_scores(flow, segs)
-            score += (flow.volume / total_volume) * flow_score
-        return score
+        # Candidate 2: warm-start fallback for this cluster
+        fb_solution = _fallback(cluster, warm_start)
+        cand2 = {fid: segs[:] for fid, segs in assignments.items()}
+        for fid, segs in fb_solution.items():
+            cand2.setdefault(fid, []).extend(segs)
+        score2 = _compute_total_score(problem, cand2)
 
-    clusters_to_solver: List[Cluster] = []
+        # Accept the better one (or always MILP if guard disabled)
+        chosen = cand1 if (not ACCEPT_GUARD or score1 >= score2) else cand2
+        assignments = chosen
 
-    if not enable_milp:
-        assignments = {fid: segs[:] for fid, segs in warm_start.items()}
-    else:
-        clusters_to_solver = clusters[:MAX_GLOBAL_MILP_CLUSTERS]
-        fallback_tail = clusters[MAX_GLOBAL_MILP_CLUSTERS:]
-        for cluster in fallback_tail:
-            fb_solution = _fallback(cluster, warm_start)
-            for fid, segs in fb_solution.items():
-                assignments[fid] = segs
-
-        for cluster in clusters_to_solver:
-            elapsed = time.perf_counter() - start_time
-            remaining = max(0.0, total_budget - elapsed)
-            if remaining <= 0.0:
-                # Out of budget: use greedy fallback
-                fb_solution = _fallback(cluster, warm_start)
-                for fid, segs in fb_solution.items():
-                    assignments[fid] = segs
-                continue
-
-            warm_cluster_solution = {fid: warm_start.get(fid, []) for fid in cluster.flow_ids}
-            warm_score = _cluster_score(cluster.flow_ids, warm_cluster_solution)
-            if warm_score >= float(os.getenv("MILP_CLUSTER_SKIP_SCORE", "92.5")):
-                for fid, segs in warm_cluster_solution.items():
-                    assignments[fid] = segs
-                continue
-
-            share = len(cluster.flow_ids) / max(1, total_flows)
-            req_time = max(cluster_floor, share * total_budget * 1.1)
-            time_limit = min(remaining, req_time)
-
-            # Rolling window heuristic based on time limit
-            horizon = problem.grid.horizon
-            base_window = 50 if time_limit < 0.25 else 110 if time_limit < 0.6 else 160
-            rolling_window = int(min(horizon, base_window))
-
-            # Candidate 1: MILP solution within allocated time
-            t_cluster = time.perf_counter()
-            milp_solution = solve_cluster(
-                cluster,
-                problem,
-                candidate_index,
-                capacity_table,
-                warm_start,
-                time_limit=time_limit,
-                rolling_window=rolling_window,
-            )
-            _timing_add("milp", time.perf_counter() - t_cluster)
-
-            # Candidate 2: greedy fallback for this cluster
-            t_fb = time.perf_counter()
-            fb_solution = _fallback(cluster, warm_start)
-            _timing_add("fallback", time.perf_counter() - t_fb)
-            chosen_solution = milp_solution
-            if ACCEPT_GUARD:
-                t_score = time.perf_counter()
-                score_milp = _cluster_score(cluster.flow_ids, milp_solution)
-                score_fb = _cluster_score(cluster.flow_ids, fb_solution)
-                chosen_solution = milp_solution if score_milp >= score_fb else fb_solution
-                _timing_add("score", time.perf_counter() - t_score)
-
-            for fid, segs in chosen_solution.items():
-                assignments[fid] = segs
-
-    # Optional second pass on largest cluster if time remains
-    leftover = total_budget - (time.perf_counter() - start_time)
-    if enable_milp and leftover > 0.3 and clusters_to_solver:
-        top_cluster = clusters_to_solver[0]
-        current_solution = {fid: assignments.get(fid, []) for fid in top_cluster.flow_ids}
-        score_current = _cluster_score(top_cluster.flow_ids, current_solution)
-        extra_time = leftover * 0.9
-        extra_window = int(min(problem.grid.horizon, 200))
-        t_cluster2 = time.perf_counter()
-        rerun_solution = solve_cluster(
-            top_cluster,
-            problem,
-            candidate_index,
-            capacity_table,
-            warm_start,
-            time_limit=extra_time,
-            rolling_window=extra_window,
-        )
-        _timing_add("milp", time.perf_counter() - t_cluster2)
-        score_rerun = _cluster_score(top_cluster.flow_ids, rerun_solution)
-        if score_rerun > score_current:
-            for fid, segs in rerun_solution.items():
-                assignments[fid] = segs
-
-    # Greedy top-up for flows still under-delivered
-    _fill_remaining_flows(problem, assignments, candidate_index, capacity_table)
-
-    # Post-process to reduce landing switches and improve delay (skip if very low time remains)
-    remain_check = total_budget - (time.perf_counter() - start_time)
-    if remain_check > 0.15:
-        t_post = time.perf_counter()
-        assignments = _postprocess_consolidate_landings(problem, assignments, capacity_table)
-        _timing_add("post", time.perf_counter() - t_post)
-    if remain_check > 0.10:
-        t_post2 = time.perf_counter()
-        assignments = _postprocess_left_shift(problem, assignments, capacity_table)
-        _timing_add("post", time.perf_counter() - t_post2)
+    # Post-process to reduce landing switches and improve delay
+    assignments = _postprocess_consolidate_landings(problem, assignments, capacity_table)
+    assignments = _postprocess_left_shift(problem, assignments, capacity_table)
 
     # Safety: enforce single landing cell per flow per time by keeping dominant segment
-    t_post3 = time.perf_counter()
     assignments = _enforce_single_cell_per_time(assignments)
-    _timing_add("post", time.perf_counter() - t_post3)
 
     for flow in problem.flows:
         segs = assignments.get(flow.flow_id, [])
         segs.sort(key=lambda seg: (seg.time, seg.x, seg.y))
         assignments[flow.flow_id] = segs
-
-    if timing_events is not None:
-        sys.stderr.write(
-            "TIMING "
-            + " ".join(f"{k}={timing_events[k]:.3f}" for k in ["warm", "milp", "fallback", "score", "post"])
-            + "\n"
-        )
 
     return assignments
 
@@ -1438,75 +1238,6 @@ def _enforce_single_cell_per_time(assignments: Dict[int, List[ScheduleSegment]])
         new_list.sort(key=lambda s: (s.time, s.x, s.y))
         fixed[fid] = new_list
     return fixed
-
-
-def _fill_remaining_flows(
-    problem: Problem,
-    assignments: Dict[int, List[ScheduleSegment]],
-    index: CandidateIndex,
-    table: Dict[Tuple[int, int], List[float]],
-) -> None:
-    remaining_cap = {cell: caps.copy() for cell, caps in table.items()}
-    for segs in assignments.values():
-        for seg in segs:
-            key = (seg.x, seg.y)
-            if key in remaining_cap:
-                remaining_cap[key][seg.time] = max(0.0, remaining_cap[key][seg.time] - seg.rate)
-
-    deficit_flows: List[Tuple[float, Flow]] = []
-    for flow in problem.flows:
-        delivered = sum(seg.rate for seg in assignments.get(flow.flow_id, []))
-        need = flow.volume - delivered
-        if need > 1e-6:
-            deficit_flows.append((need, flow))
-
-    if not deficit_flows:
-        return
-
-    deficit_flows.sort(key=lambda item: (-item[0], item[1].start_time))
-
-    for _, flow in deficit_flows:
-        fc = index.flows.get(flow.flow_id)
-        if fc is None or not fc.time_slots:
-            continue
-        used_times = {seg.time for seg in assignments.get(flow.flow_id, [])}
-        need = flow.volume - sum(seg.rate for seg in assignments.get(flow.flow_id, []))
-        if need <= 1e-6:
-            continue
-        ordered_cells = sorted(
-            fc.time_slots.items(),
-            key=lambda item: _score_cell(flow, item[1], item[0], table),
-            reverse=True,
-        )
-        new_segments: List[ScheduleSegment] = []
-        for cell, slots in ordered_cells:
-            if need <= 1e-6:
-                break
-            ea = flow.earliest_arrival(cell)
-            cap_list = remaining_cap.get(cell)
-            if not cap_list:
-                continue
-            for time_slot in slots:
-                if time_slot < ea or time_slot in used_times:
-                    continue
-                available = cap_list[time_slot]
-                if available <= 1e-6:
-                    continue
-                take = min(available, need)
-                if take <= 1e-6:
-                    continue
-                cap_list[time_slot] -= take
-                new_segments.append(
-                    ScheduleSegment(time=time_slot, x=cell[0], y=cell[1], rate=take)
-                )
-                used_times.add(time_slot)
-                need -= take
-                if need <= 1e-6:
-                    break
-        if new_segments:
-            merged = assignments.get(flow.flow_id, []) + new_segments
-            merged.sort(key=lambda seg: (seg.time, seg.x, seg.y))
-            assignments[flow.flow_id] = merged
 
 
 # ---------------------------------------------------------------------------

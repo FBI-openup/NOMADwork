@@ -125,3 +125,106 @@ V38 (65.974 on huge_board)
 
 V39 (73.460 on tall_rects)
 - Tall rectangles with stripe-x phases; score recorded.
+
+V40 (71.175 on holes_heavy)
+- Heavy B sparsity (holes) caused postprocess validity issue; fixed by safety pass enforcing single cell per time.
+
+V41 (56.504 on late_burst)
+- Late-start burst instance; score recorded.
+
+V42 (69.400 on many_hotspots)
+- Many hotspots; score recorded.
+
+V43 (81.716 on small_dense)
+- Small dense instance (high contention early); score recorded.
+
+V44 (73.147 on wide_ring)
+- Wide rectangles with ring phases; score recorded.
+
+V45 (70.079 on diagonal_checker)
+- Checker phases; score recorded.
+
+V46 (73.249 on bimodal_wide)
+- Bimodal starts, wide rects, stripe-x; score recorded.
+
+V47 (70.746 on super_sparse_b)
+- Very sparse B; score recorded.
+
+V48 (79.284 on start0_heavy)
+- All flows start at t=0, heavier volumes; score recorded.
+
+V49 (74.835 on stripeX_mixshapes)
+- Stripe-x phases, mixed rectangle shapes; score recorded.
+
+V50 (71.621 on heavy_tails)
+- Heavier-tailed volume distribution; score recorded.
+
+V51 (67.886 on phase_checker)
+- Optimized acceptance guard to score only cluster flows; fast warm-start selected automatically on large instances.
+- Reduced candidate pool aggressiveness; slight score change.
+
+V52 (timing instrumentation)
+- Added optional SUBMISSION_TIMING tracing for warm/MILP/fallback/post durations.
+- No score change.
+
+V53 (67.886 on phase_checker)
+- Increased MILP rolling window caps (50/110/160); runtime remains within budget.
+- No score change.
+
+V54 (67.886 on phase_checker)
+- Adjusted per-cluster time allocation (share * 1.2) to favor larger clusters.
+- No score change observed.
+
+V55 (67.886 on phase_checker)
+- Reduced warm-start lookahead bonus scale to 0.4 to temper horizon bias.
+- Score unchanged.
+
+V56 (70.012 on phase_gradient)
+- New instance with stripe-x phases, sparse B, and bimodal starts.
+- Score recorded.
+
+V57 (66.478 on random_sparse)
+- Random phase layout with sparse capacity and pareto volumes.
+- Score recorded.
+
+V58 (69.038 on layered_starts)
+- Checker phases with bimodal starts; score recorded.
+
+V59 (71.562 on phase_wave)
+- Stripe-y phases, wide rectangles, stronger hotspots; score recorded.
+
+V60 (second-pass MILP retry)
+- Added optional leftover-budget re-optimization on the largest cluster.
+- No score change on test set yet; runtime within budget.
+
+V61 (70.390 on checker_dense)
+- Dense checkerboard capacities with strong hotspots. Score recorded.
+
+V62 (57.968 on late_checker)
+- Late-start checker instance; score recorded.
+
+V63 (56.983 on mega68)
+- Large near-limit grid (68x68, 2500 flows). Runtime within 5s; score recorded.
+
+V64 (48.503 on mega120)
+- Oversized 120x120 grid (3500 flows); MILP disabled, warm-only schedule. Runtime ~6.8s locally due to I/O.
+
+V65 (dynamic candidate caps)
+- Reduced per-flow slot/cell caps when flows >1500; improves warm-start time on large boards.
+
+V66 (30.896 on mega250)
+- Very large 250x250 grid; MILP disabled, greedy-only warm start (runtime dominated by I/O).
+
+V67 (MILP throttling)
+- Added MILP limits: fallback when clusters too large, disable MILP for cell_count>4000 or flows>2000, cap clusters solved.
+- Reduced total MILP budget to 4.0s.
+
+V68 (cluster skip threshold)
+- Skip MILP when warm-start cluster score >=92.5. Keeps runtime low when greedy already strong.
+
+V69 (top-up fill)
+- Added greedy fill for under-served flows after MILP/fallback.
+- No immediate score delta on benchmarks.
+
+V70 (cluster floor 0.04)
+- Reduced default per-cluster time floor to 0.04s to tighten total budget.
