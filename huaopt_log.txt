@@ -145,6 +145,9 @@ Undo: reintroduce earliest_arrival guard as in H2 entry
 2025-10-26 15:14 H40 stronger throughput bias
 - Increased available_bw term to 0.25/(1+dist) and remaining_ratio weight to 3.5
   * Scores: mild 53.640, beta 55.030, easy 55.334, medium 53.897, sat60 42.826 (+0.032 vs H36)
+2025-10-26 15:18 H41 heat disabled
+- Set HEAT_BETA/GAMMA to 0 to hard-disable heat-map nudging (env flag now redundant)
+- Scores (ASCII outputs): mildH41 53.640, betaH41 55.030, easyH41 55.334, mediumH41 53.897, sat60_H41 42.826
 2025-10-26 15:05 H38 large-flow emphasis
 - Increased size_factor coefficient in urgency from 3.0 to 3.4
   * Scores: mild 53.640, beta 55.030, easy 55.334, medium 53.897, sat60 42.794 (no change)

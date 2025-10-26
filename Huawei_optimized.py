@@ -47,7 +47,8 @@ from typing import List, Tuple, Dict, Set
 import heapq
 
 # Heat-map configuration (can be toggled via environment variable)
-USE_HEAT_NUDGE = os.getenv("HUAWEI_USE_HEAT", "0") != "0"
+# USE_HEAT_NUDGE = os.getenv("HUAWEI_USE_HEAT", "0") != "0"
+USE_HEAT_NUDGE = 0
 HEAT_BETA = 6.5
 HEAT_GAMMA = 0.012
 HEAT_LAMBDA_ALONG = 0.22
